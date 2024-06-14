@@ -161,8 +161,8 @@ impl HuffmanTable {
         }
     }
 
-    pub fn code(&self, symbol: usize) -> PrefixCode {
-        self.codes[symbol]
+    pub fn code(&self, symbol: usize) -> &PrefixCode {
+        &self.codes[symbol]
     }
 }
 

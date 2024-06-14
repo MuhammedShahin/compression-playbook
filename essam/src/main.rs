@@ -1,5 +1,6 @@
 use byteorder::{ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
 use clap::Parser;
+use essam::bitio::{BitReader, BitWriter};
 use essam::huffman::{HuffmanTable, HuffmanTree, PrefixCode};
 use std::fs::File;
 use std::io::Seek;
@@ -50,6 +51,28 @@ fn write_huffman_table(
     writer: &mut impl Write,
     huffman_table: &HuffmanTable,
 ) -> anyhow::Result<()> {
+    //let mut i = 0;
+    //while i < huffman_table.codes.len() {
+    //    // Huffman codes have to be less than 15 bits in length.
+    //    assert!(huffman_table.codes[i].length <= 15);
+    //
+    //    // Check if the length is repeated
+    //    let mut j = i + 1;
+    //    while j < huffman_table.codes.len()
+    //        && huffman_table.codes[j].length == huffman_table.codes[i].length
+    //    {
+    //        j += 1;
+    //    }
+    //
+    //    // If code length is repeated > 3, use specific code for repeated code lengths.
+    //    if j - i > 3 {
+    //    } else {
+    //    }
+    //
+    //    // Update i
+    //    i = j;
+    //}
+
     writer.write_u16::<LittleEndian>(huffman_table.codes.len() as u16)?;
 
     // This can be more efficient by writing only the required bits.
@@ -79,8 +102,8 @@ fn compress(input_path: String, output_path: String) -> anyhow::Result<()> {
     let input_file = File::open(input_path)?;
     let output_file = File::create(output_path)?;
 
-    let mut buf_reader = BufReader::new(input_file);
-    let mut buf_writer = BufWriter::new(output_file);
+    let mut buf_reader = BitReader::new(BufReader::new(input_file));
+    let mut buf_writer = BitWriter::new(BufWriter::new(output_file));
 
     let stats = create_stats(&mut buf_reader)?;
     buf_reader.rewind()?;
@@ -88,46 +111,21 @@ fn compress(input_path: String, output_path: String) -> anyhow::Result<()> {
     let tree = HuffmanTree::build(&stats);
     let table = HuffmanTable::from(&tree);
 
+    let eof_symbol = table.code(EOF);
+
     write_huffman_table(&mut buf_writer, &table)?;
 
     let mut byte = [0; 1];
-
-    let mut pending: u32 = 0;
-    let mut pending_length: u8 = 0;
-
-    let mut write_symbol = |symbol: usize| -> anyhow::Result<()> {
-        let prefix_code = table.code(symbol);
-
-        if pending_length + prefix_code.length < 32 {
-            pending = pending | (prefix_code.code << pending_length);
-            pending_length = pending_length + prefix_code.length;
-        } else {
-            let to_write = pending | (prefix_code.code.overflowing_shl(pending_length as u32)).0;
-            buf_writer.write_u32::<LittleEndian>(to_write)?;
-
-            pending_length = (pending_length + prefix_code.length) - 32;
-            pending = prefix_code.code >> (prefix_code.length - pending_length);
-        }
-
-        Ok(())
-    };
-
     while let Ok(num_read_bytes) = buf_reader.read(&mut byte) {
         if num_read_bytes == 0 {
             break;
         }
-        write_symbol(byte[0] as usize)?;
+        let code = &table.code(byte[0] as usize);
+        buf_writer.write_bits(code.code.into(), code.length.into())?;
     }
-    write_symbol(EOF)?;
+    buf_writer.write_bits(eof_symbol.code.into(), eof_symbol.length.into())?;
 
-    // Write the last few
-    if pending_length != 0 {
-        let mut bytes = [0; 4];
-        LittleEndian::write_u32(&mut bytes, pending);
-
-        let num_bytes = ((pending_length + 7) / 8) as usize;
-        buf_writer.write(&bytes[0..num_bytes])?;
-    }
+    buf_writer.flush()?;
 
     Ok(())
 }
