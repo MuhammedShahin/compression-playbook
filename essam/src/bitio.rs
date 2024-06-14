@@ -138,11 +138,24 @@ impl<R: Read> BitReader<R> {
             Ok(result)
         }
     }
+}
 
-    pub fn rewind(&mut self) -> std::io::Result<()>
-    where
-        R: Seek,
-    {
+impl<R: Read + Seek> Seek for BitReader<R> {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.buffer = 0;
+        self.length = 0;
+
+        self.reader.seek(pos)
+    }
+
+    fn rewind(&mut self) -> std::io::Result<()> {
+        self.buffer = 0;
+        self.length = 0;
+
         self.reader.rewind()
+    }
+
+    fn stream_position(&mut self) -> std::io::Result<u64> {
+        self.reader.stream_position()
     }
 }
