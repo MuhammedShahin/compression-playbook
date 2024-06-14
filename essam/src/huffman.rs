@@ -1,5 +1,4 @@
 use std::collections::binary_heap::BinaryHeap;
-use thiserror::Error;
 
 pub struct HuffmanTree {
     nodes: Vec<Node>,
@@ -9,9 +8,10 @@ pub struct HuffmanTree {
 #[derive(Debug, Default)]
 pub struct HuffmanTable {
     pub codes: Vec<PrefixCode>,
+    pub lengths_count: [u32; 32],
 }
 
-#[derive(Default, Debug, Clone, Copy)]
+#[derive(Default, Clone, Copy)]
 pub struct PrefixCode {
     pub code: u32,
     pub length: u8,
@@ -19,17 +19,9 @@ pub struct PrefixCode {
 
 #[derive(Debug, Clone, Copy)]
 pub struct WalkIterator {
-    code: PrefixCode,
-    idx: usize,
-}
-
-#[derive(Debug, Error)]
-pub enum WalkError {
-    #[error("Trying to iterate past a leaf node")]
-    PastTheEnd,
-
-    #[error("Trying to iterate using an invalid index. This should never happen!")]
-    InvalidIndex,
+    pub code: PrefixCode,
+    pub idx: usize,
+    pub leaf: bool,
 }
 
 #[derive(Copy, Clone)]
@@ -58,14 +50,24 @@ impl std::fmt::Display for PrefixCode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "PrefixCode {{ code: {:b}, length: {} }}",
+            "\nPrefixCode {{ code: {:b}, length: {} }}\n",
+            self.code, self.length
+        )
+    }
+}
+
+impl std::fmt::Debug for PrefixCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "\nPrefixCode {{ code: {:b}, length: {} }}\n",
             self.code, self.length
         )
     }
 }
 
 impl HuffmanTree {
-    pub fn build(freqs: &Vec<u32>) -> HuffmanTree {
+    pub fn build(freqs: &[u32]) -> HuffmanTree {
         let num_symbols = freqs.len();
         let capacity = 2 * num_symbols - 1;
 
@@ -74,8 +76,7 @@ impl HuffmanTree {
 
         let mut heap = BinaryHeap::<std::cmp::Reverse<HeapEntry>>::new(); // reverse so that it
                                                                           // becomes a min heap
-
-        // We first add the leaf nodes, and create binary heap with the nodes.
+                                                                          // We first add the leaf nodes, and create binary heap with the nodes.
         for (idx, freq) in freqs.iter().enumerate() {
             nodes.push(Node {
                 freq: *freq,
@@ -83,10 +84,13 @@ impl HuffmanTree {
                 right: None,
             });
 
-            heap.push(std::cmp::Reverse(HeapEntry {
-                freq: *freq,
-                idx: idx as u32,
-            }));
+            // Ignore symbols that have probability 0.
+            if *freq != 0 {
+                heap.push(std::cmp::Reverse(HeapEntry {
+                    freq: *freq,
+                    idx: idx as u32,
+                }));
+            }
         }
 
         // Until the heap is empty, we pop the two smallest elements, and create an internal node
@@ -124,26 +128,50 @@ impl HuffmanTree {
         WalkIterator {
             idx: self.nodes.len() - 1,
             code: PrefixCode::default(),
+            leaf: false,
         }
     }
 
-    pub fn walk(&self, iter: WalkIterator, bit: bool) -> Result<WalkIterator, WalkError> {
-        if self.is_leaf_node(iter.idx) {
-            return Err(WalkError::PastTheEnd);
-        }
+    pub fn walk(&self, iter: WalkIterator, bit: bool) -> WalkIterator {
+        let idx = if bit {
+            self.nodes[iter.idx].right.unwrap() as usize
+        } else {
+            self.nodes[iter.idx].left.unwrap() as usize
+        };
 
-        Ok(WalkIterator {
+        WalkIterator {
             code: PrefixCode::update(iter.code, bit),
-            idx: if bit {
-                self.nodes[iter.idx].right.unwrap() as usize
-            } else {
-                self.nodes[iter.idx].left.unwrap() as usize
-            },
-        })
+            idx,
+            leaf: self.is_leaf_node(idx),
+        }
     }
 }
 
 impl HuffmanTable {
+    pub fn from_lengths(lengths: &[u8]) -> Self {
+        let mut lengths_count: [u32; 32] = [0; 32];
+        let mut codes = Vec::new();
+        codes.reserve(lengths.len());
+
+        for length in lengths {
+            assert!(*length < 32);
+            lengths_count[*length as usize] += 1;
+
+            codes.push(PrefixCode {
+                code: 0, // Will be initialized later,
+                length: *length,
+            });
+        }
+        let mut table = Self {
+            codes,
+            lengths_count,
+        };
+
+        table.canonicalize();
+
+        table
+    }
+
     fn build_impl(tree: &HuffmanTree, idx: usize, code: PrefixCode, table: &mut HuffmanTable) {
         if tree.is_leaf_node(idx) {
             table.codes[idx] = code;
@@ -161,6 +189,24 @@ impl HuffmanTable {
         }
     }
 
+    pub fn canonicalize(&mut self) {
+        // Same implementation as in RFC1951 (but MAX_BITS is extended a little bit)
+        let mut next_code: [u32; 32] = [0; 32];
+
+        let mut code = 0;
+        for (idx, count) in self.lengths_count[1..].iter().enumerate() {
+            next_code[idx + 1] = code;
+            code = (code + count) << 1;
+        }
+
+        for code in self.codes.iter_mut() {
+            if code.length != 0 {
+                code.code = next_code[code.length as usize].reverse_bits() >> (32 - code.length);
+                next_code[code.length as usize] += 1;
+            }
+        }
+    }
+
     pub fn code(&self, symbol: usize) -> &PrefixCode {
         &self.codes[symbol]
     }
@@ -168,7 +214,10 @@ impl HuffmanTable {
 
 impl From<&HuffmanTree> for HuffmanTable {
     fn from(tree: &HuffmanTree) -> Self {
-        let mut table = HuffmanTable { codes: Vec::new() };
+        let mut table = HuffmanTable {
+            codes: Vec::new(),
+            lengths_count: [0; 32],
+        };
         // Is there a better way to directly initialize the vector in the above line?
         table.codes.resize(tree.num_symbols, PrefixCode::default());
 
@@ -179,12 +228,14 @@ impl From<&HuffmanTree> for HuffmanTable {
             &mut table,
         );
 
+        for code in &table.codes {
+            table.lengths_count[code.length as usize] += 1;
+        }
+
         return table;
     }
 }
 
-// TODO
-#[allow(unused_variables)]
 impl From<&HuffmanTable> for HuffmanTree {
     fn from(table: &HuffmanTable) -> Self {
         let num_symbols = table.codes.len();
@@ -202,12 +253,57 @@ impl From<&HuffmanTable> for HuffmanTree {
 
         //  The last node is the root
         let root_idx = nodes.len() - 1;
-        let alloc_idx = nodes.len() - 2;
+        let mut alloc_idx = nodes.len() - 1;
 
-        for code in table.codes.iter() {
-            let crawler_idx = root_idx;
+        for (idx, code) in table.codes.iter().enumerate() {
+            let mut crawler_idx = root_idx;
 
-            for bit_idx in 0..code.length {}
+            if code.length == 0 {
+                continue;
+            }
+            for bit_idx in 0..code.length {
+                let bit = code.code & ((0b1 as u32) << bit_idx);
+                if bit == 0 {
+                    match nodes[crawler_idx].left {
+                        None => {
+                            let node_idx = if bit_idx == code.length - 1 {
+                                idx
+                            } else {
+                                alloc_idx -= 1;
+                                alloc_idx
+                            };
+
+                            nodes[crawler_idx].left = Some(node_idx as u32);
+                            crawler_idx = node_idx;
+                        }
+                        Some(idx) => {
+                            assert!(bit_idx != code.length);
+                            crawler_idx = idx as usize;
+                        }
+                    }
+                } else {
+                    match nodes[crawler_idx].right {
+                        None => {
+                            let node_idx = if bit_idx == code.length - 1 {
+                                idx
+                            } else {
+                                alloc_idx -= 1;
+                                alloc_idx
+                            };
+
+                            nodes[crawler_idx].right = Some(node_idx as u32);
+                            crawler_idx = node_idx;
+                        }
+                        Some(idx) => {
+                            assert!(bit_idx != code.length);
+                            crawler_idx = idx as usize;
+                        }
+                    }
+                }
+            }
+
+            assert!(nodes[crawler_idx].left.is_none());
+            assert!(nodes[crawler_idx].right.is_none());
         }
 
         HuffmanTree { nodes, num_symbols }

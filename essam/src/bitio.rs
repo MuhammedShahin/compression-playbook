@@ -108,7 +108,9 @@ impl<R: Read> BitReader<R> {
     pub fn read_bits(&mut self, length: usize) -> std::io::Result<u64> {
         assert!(length <= Self::BUF_NBITS);
 
-        let mask = !(0 as u64).overflowing_shr(length as u32).0;
+        let mask = (!(0 as u64))
+            .overflowing_shr((Self::BUF_NBITS - length) as u32)
+            .0;
 
         if length < self.length {
             let return_value = self.buffer & mask;
