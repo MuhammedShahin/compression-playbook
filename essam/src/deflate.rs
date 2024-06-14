@@ -17,6 +17,8 @@ const LENGTH_ORDER: [usize; 19] = [
     16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
 ];
 
+const MAX_CODE_LENGTH: u32 = 15;
+
 pub fn compress(reader: impl Read + Seek, writer: impl Write) -> std::io::Result<()> {
     let mut bit_reader = BitReader::new(reader);
     let mut bit_writer = BitWriter::new(writer);
@@ -24,7 +26,7 @@ pub fn compress(reader: impl Read + Seek, writer: impl Write) -> std::io::Result
     let stats = create_stats(&mut bit_reader)?;
     bit_reader.rewind()?;
 
-    let tree = HuffmanTree::build(&stats);
+    let tree = HuffmanTree::build(&stats, MAX_CODE_LENGTH);
     let mut table = HuffmanTable::from(&tree);
     table.canonicalize();
 
@@ -167,7 +169,7 @@ fn write_huffman_table<W: Write>(
     lengths_freqs[0] += 1;
 
     let length_huffman_table = {
-        let mut table = HuffmanTable::from(&HuffmanTree::build(&lengths_freqs));
+        let mut table = HuffmanTable::from(&HuffmanTree::build(&lengths_freqs, MAX_CODE_LENGTH));
         table.canonicalize();
         table
     };

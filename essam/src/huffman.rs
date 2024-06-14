@@ -26,14 +26,13 @@ pub struct WalkIterator {
 
 #[derive(Copy, Clone)]
 struct Node {
-    freq: u32,
     left: Option<u32>,
     right: Option<u32>,
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 struct HeapEntry {
-    freq: u32,
+    freq: std::cell::Cell<u32>,
     idx: u32,
 }
 
@@ -67,19 +66,30 @@ impl std::fmt::Debug for PrefixCode {
 }
 
 impl HuffmanTree {
-    pub fn build(freqs: &[u32]) -> HuffmanTree {
+    pub fn build(freqs: &[u32], max_code_length: u32) -> HuffmanTree {
         let num_symbols = freqs.len();
         let capacity = 2 * num_symbols - 1;
 
         let mut nodes = Vec::<Node>::new();
         nodes.reserve(capacity);
 
-        let mut heap = BinaryHeap::<std::cmp::Reverse<HeapEntry>>::new(); // reverse so that it
-                                                                          // becomes a min heap
-                                                                          // We first add the leaf nodes, and create binary heap with the nodes.
+        // Reverse so that it becomes a min heap.
+        let mut heap = BinaryHeap::<std::cmp::Reverse<HeapEntry>>::new();
+
+        // Maximum allowable frequency so that we can't get a code length > max_code_length
+        // The worst possible case is that we have frequencies that look like this:
+        //      1, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, ....
+        // In this case would have a single code for each code length.
+        // This solution sets a limit on the maximum allowable frequency by normalizing frequencies
+        // to be in an acceptable range.
+        let max_allowable_freq = 1 << (max_code_length - 1);
+        let mut max_freq = 0;
+
+        // We first add the leaf nodes, and create binary heap with the nodes.
         for (idx, freq) in freqs.iter().enumerate() {
+            max_freq = max_freq.max(*freq);
+
             nodes.push(Node {
-                freq: *freq,
                 left: None,
                 right: None,
             });
@@ -87,9 +97,21 @@ impl HuffmanTree {
             // Ignore symbols that have probability 0.
             if *freq != 0 {
                 heap.push(std::cmp::Reverse(HeapEntry {
-                    freq: *freq,
+                    freq: (*freq).into(),
                     idx: idx as u32,
                 }));
+            }
+        }
+
+        if max_freq > max_allowable_freq {
+            let ratio = (max_freq + max_allowable_freq - 1) / max_allowable_freq;
+
+            for heap_entry in heap.iter() {
+                let freq = heap_entry.0.freq.get();
+
+                // Division maintains heap order.
+                // This can be optimized to use shifting instead of integer division
+                heap_entry.0.freq.replace((freq + ratio - 1) / ratio);
             }
         }
 
@@ -99,19 +121,15 @@ impl HuffmanTree {
             let entry1 = heap.pop().unwrap(); // unwrap should always succeed here
             let entry2 = heap.pop().unwrap();
 
-            let node1_idx = entry1.0.idx as usize;
-            let node2_idx = entry2.0.idx as usize;
-
             // Create internal node with children being the least two nodes.
             let internal_node = Node {
-                freq: nodes[node1_idx].freq + nodes[node2_idx].freq,
                 left: Some(entry1.0.idx),
                 right: Some(entry2.0.idx),
             };
 
             let internal_node_idx = nodes.len() as u32;
             heap.push(std::cmp::Reverse(HeapEntry {
-                freq: internal_node.freq,
+                freq: (entry1.0.freq.get() + entry2.0.freq.get()).into(),
                 idx: internal_node_idx,
             }));
             nodes.push(internal_node);
@@ -245,7 +263,6 @@ impl From<&HuffmanTable> for HuffmanTree {
         nodes.resize(
             capacity,
             Node {
-                freq: 0,
                 left: None,
                 right: None,
             },
