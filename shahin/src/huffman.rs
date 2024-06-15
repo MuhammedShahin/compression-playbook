@@ -37,8 +37,9 @@ impl Huffman {
             self.build_huffman_lookup(&huffman_tree, String::new(), &mut huffman_lookup);
         }
         for (character, prefix) in huffman_lookup {
-            println!("character: {:?}, prefix: {}", character, prefix);
+            println!("character: {:?}, prefix: {}, length: {}", character, prefix, prefix.len());
         }
+
     }
     
     fn analyz_symboles(&self, contents: String) -> BinaryHeap<Node> {
