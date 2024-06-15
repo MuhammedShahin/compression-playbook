@@ -150,18 +150,28 @@ impl HuffmanTree {
         }
     }
 
-    pub fn walk(&self, iter: WalkIterator, bit: bool) -> WalkIterator {
-        let idx = if bit {
-            self.nodes[iter.idx].right.unwrap() as usize
+    pub fn walk(&self, iter: WalkIterator, bit: bool) -> Option<WalkIterator> {
+        let idx;
+
+        if bit {
+            if let Some(right) = self.nodes[iter.idx].right {
+                idx = right as usize;
+            } else {
+                return None;
+            }
         } else {
-            self.nodes[iter.idx].left.unwrap() as usize
+            if let Some(left) = self.nodes[iter.idx].left {
+                idx = left as usize;
+            } else {
+                return None;
+            }
         };
 
-        WalkIterator {
+        Some(WalkIterator {
             code: PrefixCode::update(iter.code, bit),
             idx,
             leaf: self.is_leaf_node(idx),
-        }
+        })
     }
 }
 

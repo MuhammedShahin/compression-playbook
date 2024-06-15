@@ -33,7 +33,6 @@ struct Block {
     distance_freqs: [u32; NUM_DISTANCE_SYMBOLS],
 }
 
-#[derive(Debug)]
 struct BlockCompressionInfo {
     num_literal_codes: usize,
     num_distance_codes: usize,
@@ -64,18 +63,44 @@ pub fn compress(
     let mut block = Block::default();
 
     loop {
-        match compress_block(&mut reader, &mut bit_writer, &mut block, &options) {
-            Ok(true) => {
-                break;
-            }
-            Ok(false) => {}
-            Err(error) => {
-                return Err(error);
-            }
+        let bfinal = compress_block(&mut reader, &mut bit_writer, &mut block, &options)?;
+
+        if bfinal {
+            break;
         }
     }
 
     bit_writer.flush()
+}
+
+pub fn decompress(reader: &mut (impl Read + Seek), writer: &mut impl Write) -> std::io::Result<()> {
+    let mut bit_reader = BitReader::new(reader);
+    let mut bit_writer = BitWriter::new(writer);
+
+    loop {
+        let bfinal = decompress_block(&mut bit_reader, &mut bit_writer)?;
+
+        if bfinal {
+            break;
+        }
+    }
+
+    bit_reader.put_back_extra()?;
+    bit_writer.flush()
+}
+
+fn is_end_of_file(reader: &mut (impl Read + Seek)) -> std::io::Result<bool> {
+    let mut buf = [0; 1];
+    // Check end of file
+    // Not the best way to check end of file I guess.
+    let read_bytes = reader.read(&mut buf)?;
+    if read_bytes == 1 {
+        // reader.seek_relative(-1)?; // Not stabilized yet
+        reader.seek(std::io::SeekFrom::Current(-1))?;
+        Ok(false)
+    } else {
+        Ok(true)
+    }
 }
 
 fn compress_block<W: Write>(
@@ -106,20 +131,7 @@ fn compress_block<W: Write>(
         distance_table
     };
 
-    // Check end of file
-    // Not the best way to check end of file I guess.
-    let mut buf = [0; 1];
-    let bfinal = {
-        let read_bytes = reader.read(&mut buf)?;
-        if read_bytes == 1 {
-            // FIXME
-            // reader.seek_relative(-1)?;
-            reader.seek(std::io::SeekFrom::Current(-1))?;
-            false
-        } else {
-            true
-        }
-    };
+    let bfinal = is_end_of_file(reader)?;
     writer.write_bits((bfinal as u64) | 0b100, 3)?; // Write BFINAL and BTYPE
 
     write_huffman_tables(writer, &literal_table, &distance_table, &info)?;
@@ -134,26 +146,6 @@ fn compress_block<W: Write>(
     writer.write_bits(eof_symbol.code.into(), eof_symbol.length.into())?;
 
     Ok(bfinal)
-}
-
-pub fn decompress(reader: &mut (impl Read + Seek), writer: &mut impl Write) -> std::io::Result<()> {
-    let mut bit_reader = BitReader::new(reader);
-    let mut bit_writer = BitWriter::new(writer);
-
-    loop {
-        match decompress_block(&mut bit_reader, &mut bit_writer) {
-            Ok(true) => {
-                break;
-            }
-            Ok(false) => {}
-            Err(error) => {
-                return Err(error);
-            }
-        }
-    }
-
-    bit_reader.put_back_extra()?;
-    bit_writer.flush()
 }
 
 fn decompress_block<R: Read + Seek, W: Write>(
@@ -174,7 +166,7 @@ fn decompress_block<R: Read + Seek, W: Write>(
     loop {
         while !iter.leaf {
             let bit = reader.read_bits(1)? != 0;
-            iter = tree.walk(iter, bit);
+            iter = tree.walk(iter, bit).unwrap();
         }
 
         let symbol = iter.idx;
@@ -416,7 +408,7 @@ fn read_huffman_table<R: Read>(reader: &mut BitReader<R>) -> std::io::Result<Huf
 
         while !iter.leaf {
             let bit = reader.read_bits(1)? != 0;
-            iter = length_huffman_tree.walk(iter, bit);
+            iter = length_huffman_tree.walk(iter, bit).unwrap();
         }
 
         let code_length = iter.idx as u64;
@@ -455,7 +447,7 @@ fn read_huffman_table<R: Read>(reader: &mut BitReader<R>) -> std::io::Result<Huf
 
         while !iter.leaf {
             let bit = reader.read_bits(1)? != 0;
-            iter = length_huffman_tree.walk(iter, bit);
+            iter = length_huffman_tree.walk(iter, bit).unwrap();
         }
 
         // TODO
