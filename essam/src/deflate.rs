@@ -56,8 +56,8 @@ impl Default for Block {
 }
 
 pub fn compress(
-    mut reader: impl Read + Seek,
-    writer: impl Write,
+    mut reader: &mut (impl Read + Seek),
+    writer: &mut impl Write,
     options: DeflateOptions,
 ) -> std::io::Result<()> {
     let mut bit_writer = BitWriter::new(writer);
@@ -134,7 +134,7 @@ fn compress_block<W: Write>(
     Ok(bfinal)
 }
 
-pub fn decompress(reader: impl Read + Seek, writer: impl Write) -> std::io::Result<()> {
+pub fn decompress(reader: &mut (impl Read + Seek), writer: &mut impl Write) -> std::io::Result<()> {
     let mut bit_reader = BitReader::new(reader);
     let mut bit_writer = BitWriter::new(writer);
 
@@ -150,6 +150,7 @@ pub fn decompress(reader: impl Read + Seek, writer: impl Write) -> std::io::Resu
         }
     }
 
+    bit_reader.put_back_extra()?;
     bit_writer.flush()
 }
 

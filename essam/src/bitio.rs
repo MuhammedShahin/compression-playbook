@@ -138,6 +138,18 @@ impl<R: Read> BitReader<R> {
             Ok(result)
         }
     }
+
+    pub fn put_back_extra(&mut self) -> std::io::Result<()>
+    where
+        R: Seek,
+    {
+        // ignore the byte we've already taken bits from.
+        let nbytes = (self.length / 8) as i64;
+
+        self.length = 0;
+        self.buffer = 0;
+        self.seek_relative(-nbytes)
+    }
 }
 
 impl<R: Read + Seek> Seek for BitReader<R> {

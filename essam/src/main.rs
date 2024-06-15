@@ -1,9 +1,5 @@
 use clap::Parser;
-use essam::deflate::{
-    compress as deflate_compress, decompress as deflate_decompress, DeflateOptions,
-};
-use std::fs::File;
-use std::io::{BufReader, BufWriter};
+use essam::gzip::{compress as gzip_compress, decompress as gzip_decompress};
 
 #[derive(Debug, Clone, clap::Args)]
 struct OperationArgs {
@@ -24,23 +20,11 @@ struct Args {
 }
 
 fn compress(input_path: String, output_path: String) -> anyhow::Result<()> {
-    let input_file = File::open(input_path)?;
-    let output_file = File::create(output_path)?;
-
-    let buf_reader = BufReader::new(input_file);
-    let buf_writer = BufWriter::new(output_file);
-
-    deflate_compress(buf_reader, buf_writer, DeflateOptions::default()).map_err(anyhow::Error::from)
+    gzip_compress(input_path, output_path).map_err(anyhow::Error::from)
 }
 
 fn decompress(input_path: String, output_path: String) -> anyhow::Result<()> {
-    let input_file = File::open(input_path)?;
-    let output_file = File::create(output_path)?;
-
-    let buf_reader = BufReader::new(input_file);
-    let buf_writer = BufWriter::new(output_file);
-
-    deflate_decompress(buf_reader, buf_writer).map_err(anyhow::Error::from)
+    gzip_decompress(input_path, output_path).map_err(anyhow::Error::from)
 }
 
 fn main() -> anyhow::Result<()> {
