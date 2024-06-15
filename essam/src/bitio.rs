@@ -148,7 +148,11 @@ impl<R: Read> BitReader<R> {
 
         self.length = 0;
         self.buffer = 0;
-        self.seek_relative(-nbytes)
+        // FIXME
+        // self.seek_relative(-nbytes)
+        self.seek(std::io::SeekFrom::Current(-nbytes))?;
+
+        Ok(())
     }
 }
 

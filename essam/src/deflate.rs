@@ -112,7 +112,9 @@ fn compress_block<W: Write>(
     let bfinal = {
         let read_bytes = reader.read(&mut buf)?;
         if read_bytes == 1 {
-            reader.seek_relative(-1)?;
+            // FIXME
+            // reader.seek_relative(-1)?;
+            reader.seek(std::io::SeekFrom::Current(-1))?;
             false
         } else {
             true
