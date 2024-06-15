@@ -2,6 +2,8 @@ use crate::bitio::{BitReader, BitWriter};
 use crate::huffman::{HuffmanTable, HuffmanTree};
 use std::io::{Read, Seek, Write};
 
+const NUM_LITERAL_SYMBOLS: usize = 286;
+const NUM_DISTANCE_SYMBOLS: usize = 19;
 const EOF: usize = 256;
 
 const REPEAT_PREV_3_6_SYMBOL: u64 = 16;
@@ -17,113 +19,296 @@ const LENGTH_ORDER: [usize; 19] = [
     16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
 ];
 
-const MAX_CODE_LENGTH: u32 = 15;
+const MAX_CODE_LENGTH: usize = 15;
+const MAX_LENGTH_CODE_LENGTH: usize = 7;
+const CODE_LENGTH_CODE_LENGTH_LEN: usize = 3; // Absolutely ridiculous
 
-pub fn compress(reader: impl Read + Seek, writer: impl Write) -> std::io::Result<()> {
-    let mut bit_reader = BitReader::new(reader);
-    let mut bit_writer = BitWriter::new(writer);
+pub struct DeflateOptions {
+    pub block_size: usize,
+}
 
-    let stats = create_stats(&mut bit_reader)?;
-    bit_reader.rewind()?;
+struct Block {
+    symbols: Vec<u16>,
+    literal_freqs: [u32; NUM_LITERAL_SYMBOLS],
+    distance_freqs: [u32; NUM_DISTANCE_SYMBOLS],
+}
 
-    let tree = HuffmanTree::build(&stats, MAX_CODE_LENGTH);
-    let mut table = HuffmanTable::from(&tree);
-    table.canonicalize();
+#[derive(Debug)]
+struct BlockCompressionInfo {
+    num_literal_codes: usize,
+    num_distance_codes: usize,
+}
 
-    let eof_symbol = table.code(EOF);
-
-    // TODO: Segment the file into multiple blocks.
-    bit_writer.write_bits(0b101, 3)?; // Write BFINAL and BTYPE
-
-    write_huffman_table(&mut bit_writer, &table)?;
-
-    let mut byte = [0; 1];
-    while let Ok(num_read_bytes) = bit_reader.read(&mut byte) {
-        if num_read_bytes == 0 {
-            break;
-        }
-        let code = &table.code(byte[0] as usize);
-        bit_writer.write_bits(code.code.into(), code.length.into())?;
+impl Default for DeflateOptions {
+    fn default() -> Self {
+        Self { block_size: 16384 }
     }
-    bit_writer.write_bits(eof_symbol.code.into(), eof_symbol.length.into())?;
+}
 
-    bit_writer.flush()?;
+impl Default for Block {
+    fn default() -> Self {
+        Self {
+            symbols: Vec::new(),
+            literal_freqs: [0; NUM_LITERAL_SYMBOLS],
+            distance_freqs: [0; NUM_DISTANCE_SYMBOLS],
+        }
+    }
+}
 
-    Ok(())
+pub fn compress(
+    mut reader: impl Read + Seek,
+    writer: impl Write,
+    options: DeflateOptions,
+) -> std::io::Result<()> {
+    let mut bit_writer = BitWriter::new(writer);
+    let mut block = Block::default();
+
+    loop {
+        match compress_block(&mut reader, &mut bit_writer, &mut block, &options) {
+            Ok(true) => {
+                break;
+            }
+            Ok(false) => {}
+            Err(error) => {
+                return Err(error);
+            }
+        }
+    }
+
+    bit_writer.flush()
+}
+
+fn compress_block<W: Write>(
+    reader: &mut (impl Read + Seek),
+    writer: &mut BitWriter<W>,
+    block: &mut Block,
+    options: &DeflateOptions,
+) -> std::io::Result<bool> {
+    let info = compress_block_gen_symbols(reader, block, options)?;
+
+    let literal_table = {
+        let literal_tree = HuffmanTree::build(
+            &block.literal_freqs[0..info.num_literal_codes],
+            MAX_CODE_LENGTH,
+        );
+        let mut literal_table = HuffmanTable::from(&literal_tree);
+        literal_table.canonicalize();
+        literal_table
+    };
+
+    let distance_table = {
+        let distance_tree = HuffmanTree::build(
+            &block.distance_freqs[0..info.num_distance_codes],
+            MAX_CODE_LENGTH,
+        );
+        let mut distance_table = HuffmanTable::from(&distance_tree);
+        distance_table.canonicalize();
+        distance_table
+    };
+
+    // Check end of file
+    // Not the best way to check end of file I guess.
+    let mut buf = [0; 1];
+    let bfinal = {
+        let read_bytes = reader.read(&mut buf)?;
+        if read_bytes == 1 {
+            reader.seek_relative(-1)?;
+            false
+        } else {
+            true
+        }
+    };
+    writer.write_bits((bfinal as u64) | 0b100, 3)?; // Write BFINAL and BTYPE
+
+    write_huffman_tables(writer, &literal_table, &distance_table, &info)?;
+
+    for symbol in &block.symbols {
+        let code = &literal_table.code(*symbol as usize);
+        writer.write_bits(code.code.into(), code.length.into())?;
+    }
+
+    // Write EOF
+    let eof_symbol = literal_table.code(EOF);
+    writer.write_bits(eof_symbol.code.into(), eof_symbol.length.into())?;
+
+    Ok(bfinal)
 }
 
 pub fn decompress(reader: impl Read + Seek, writer: impl Write) -> std::io::Result<()> {
-    let mut buf_reader = BitReader::new(reader);
-    let mut buf_writer = BitWriter::new(writer);
+    let mut bit_reader = BitReader::new(reader);
+    let mut bit_writer = BitWriter::new(writer);
 
-    // TODO
-    buf_reader.read_bits(3)?; // Write BFINAL and BTYPE
+    loop {
+        match decompress_block(&mut bit_reader, &mut bit_writer) {
+            Ok(true) => {
+                break;
+            }
+            Ok(false) => {}
+            Err(error) => {
+                return Err(error);
+            }
+        }
+    }
 
-    let table = read_huffman_table(&mut buf_reader)?;
+    bit_writer.flush()
+}
+
+fn decompress_block<R: Read + Seek, W: Write>(
+    reader: &mut BitReader<R>,
+    writer: &mut BitWriter<W>,
+) -> std::io::Result<bool> {
+    // Read BFINAL and BTYPE
+    let bfinal = reader.read_bits(1)?;
+    let btype = reader.read_bits(2)?;
+
+    assert!(btype == 0b10);
+
+    let table = read_huffman_table(reader)?;
     let tree = HuffmanTree::from(&table);
 
     let mut iter = tree.create_walk_iter();
 
-    while let Ok(bit) = buf_reader.read_bits(1) {
-        iter = tree.walk(iter, bit != 0);
-        if iter.leaf {
-            let symbol = iter.idx;
+    loop {
+        while !iter.leaf {
+            let bit = reader.read_bits(1)? != 0;
+            iter = tree.walk(iter, bit);
+        }
 
-            if symbol == EOF {
+        let symbol = iter.idx;
+
+        if symbol == EOF {
+            break;
+        }
+
+        writer.write(&symbol.to_le_bytes()[0..1])?;
+        iter = tree.create_walk_iter();
+    }
+
+    Ok(bfinal != 0)
+}
+
+fn compress_block_gen_symbols(
+    bit_reader: &mut impl Read,
+    block: &mut Block,
+    options: &DeflateOptions,
+) -> std::io::Result<BlockCompressionInfo> {
+    // Reset block
+    block.symbols.clear();
+    block.literal_freqs.fill(0);
+    block.distance_freqs.fill(0);
+
+    // Single EOF symbol at the last of the block.
+    block.literal_freqs[EOF] = 1;
+
+    let mut buffer = [0; 256];
+    let mut tot_read_bytes = 0;
+    let mut bytes_to_read = buffer.len().min(options.block_size);
+
+    // TODO: Implement LZ77
+    loop {
+        let num_read_bytes = bit_reader.read(&mut buffer[0..bytes_to_read])?;
+
+        for byte in &buffer[0..num_read_bytes] {
+            block.symbols.push(*byte as u16);
+            block.literal_freqs[*byte as usize] += 1;
+        }
+
+        tot_read_bytes += num_read_bytes;
+        let remaining_bytes = options.block_size - tot_read_bytes;
+
+        if num_read_bytes == 0 || remaining_bytes <= 0 {
+            break;
+        }
+
+        bytes_to_read = buffer.len().min(remaining_bytes);
+    }
+
+    assert!(tot_read_bytes > 0);
+
+    Ok(BlockCompressionInfo {
+        num_literal_codes: 257,
+        num_distance_codes: 1,
+    })
+}
+
+fn write_huffman_tables<W: Write>(
+    writer: &mut BitWriter<W>,
+    literal_table: &HuffmanTable,
+    distance_table: &HuffmanTable,
+    info: &BlockCompressionInfo,
+) -> std::io::Result<()> {
+    // Write HLIT (number of literals - 257)
+    writer.write_bits((info.num_literal_codes - 257) as u64, 5)?;
+    // Write HDIST (number of distant codes - 1)
+    writer.write_bits((info.num_distance_codes - 1) as u64, 5)?;
+
+    let mut lengths_freqs: [u32; 19] = [0; 19];
+
+    let literal_table_lengths_symbols =
+        compress_huffman_table_gen_symbols(literal_table, &mut lengths_freqs);
+    let distance_table_lengths_symbols =
+        compress_huffman_table_gen_symbols(distance_table, &mut lengths_freqs);
+
+    let num_code_length_codes = {
+        let mut result = 4;
+        for i in (4..19).rev() {
+            if lengths_freqs[LENGTH_ORDER[i]] != 0 {
+                result = i + 1;
                 break;
             }
-
-            buf_writer.write(&symbol.to_le_bytes()[0..1])?;
-            iter = tree.create_walk_iter();
         }
+        result
+    };
+
+    // Write HCLEN (number of code length codes - 4)
+    writer.write_bits((num_code_length_codes - 4) as u64, 4)?;
+
+    let length_table = {
+        let mut table =
+            HuffmanTable::from(&HuffmanTree::build(&lengths_freqs, MAX_LENGTH_CODE_LENGTH));
+        table.canonicalize();
+        table
+    };
+
+    // Write code lengths for the code lengths alphabet
+    for idx in 0..num_code_length_codes {
+        writer.write_bits(
+            length_table.code(LENGTH_ORDER[idx]).length as u64,
+            CODE_LENGTH_CODE_LENGTH_LEN,
+        )?;
     }
+
+    // Write code lengths for the literal/length alphabet.
+    write_huffman_length_symbols(writer, &literal_table_lengths_symbols, &length_table)?;
+
+    // Write code lengths for the distance alphabet.
+    write_huffman_length_symbols(writer, &distance_table_lengths_symbols, &length_table)?;
 
     Ok(())
 }
 
-fn create_stats(bit_reader: &mut impl Read) -> std::io::Result<Vec<u32>> {
-    let mut stats = Vec::new();
-    stats.resize(257, 0);
-    stats[EOF] = 1;
-
-    let mut buffer = [0; 256];
-
-    while let Ok(num_read_bytes) = bit_reader.read(&mut buffer) {
-        for byte in &buffer[0..num_read_bytes] {
-            stats[*byte as usize] += 1;
-        }
-
-        if num_read_bytes == 0 {
-            break;
-        }
+fn compress_huffman_table_gen_symbols(
+    table: &HuffmanTable,
+    lengths_freqs: &mut [u32; 19],
+) -> Vec<u16> {
+    if table.codes.is_empty() {
+        // This is because HDIST has to be at least 1, so we increment
+        // the frequency for the zero symbol so that this singular element
+        // has length 0
+        lengths_freqs[0] += 1;
+        return [0].into();
     }
 
-    Ok(stats)
-}
-
-fn write_huffman_table<W: Write>(
-    writer: &mut BitWriter<W>,
-    huffman_table: &HuffmanTable,
-) -> std::io::Result<()> {
-    // Write HLIT (number of literals - 257)
-    writer.write_bits(0, 5)?;
-    // Write HDIST (number of distant codes - 1)
-    writer.write_bits(0, 5)?;
-    // Write HCLEN (number of code length codes - 4)
-    writer.write_bits(15, 4)?;
-
-    let mut lengths_freqs: [u32; 19] = [0; 19];
-
     let mut symbols = Vec::<u16>::new();
-    symbols.reserve(huffman_table.codes.len());
+    symbols.reserve(table.codes.len());
 
     let mut i: usize = 0;
-    while i < huffman_table.codes.len() {
-        let code = &huffman_table.code(i);
+    while i < table.codes.len() {
+        let code = &table.code(i);
 
         // Check if the length is repeated
         let mut j = i + 1;
-        while j < huffman_table.codes.len() && huffman_table.codes[j].length == code.length {
+        while j < table.codes.len() && table.codes[j].length == code.length {
             j += 1;
         }
 
@@ -165,25 +350,20 @@ fn write_huffman_table<W: Write>(
         i += num_repeated;
     }
 
-    // For the code length of the distance alphabet
-    lengths_freqs[0] += 1;
+    symbols
+}
 
-    let length_huffman_table = {
-        let mut table = HuffmanTable::from(&HuffmanTree::build(&lengths_freqs, MAX_CODE_LENGTH));
-        table.canonicalize();
-        table
-    };
-
-    // Write code lengths for the code lengths alphabet
-    for idx in LENGTH_ORDER {
-        writer.write_bits(length_huffman_table.codes[idx].length as u64, 3)?;
-    }
-
+fn write_huffman_length_symbols<W: Write>(
+    writer: &mut BitWriter<W>,
+    symbols: &Vec<u16>,
+    length_table: &HuffmanTable,
+) -> std::io::Result<()> {
     // Write code lengths for the literal/length alphabet.
     let mut i = 0;
     while i < symbols.len() {
         let symbol = symbols[i];
-        let code = length_huffman_table.code(symbol as usize);
+
+        let code = length_table.code(symbol as usize);
         writer.write_bits(code.code as u64, code.length as usize)?;
 
         match symbol as u64 {
@@ -205,13 +385,6 @@ fn write_huffman_table<W: Write>(
         i += 1;
     }
 
-    // Write code lengths for the distance alphabet.
-    let zero_length_code = length_huffman_table.code(0);
-    writer.write_bits(
-        zero_length_code.code as u64,
-        zero_length_code.length as usize,
-    )?;
-
     Ok(())
 }
 
@@ -227,8 +400,8 @@ fn read_huffman_table<R: Read>(reader: &mut BitReader<R>) -> std::io::Result<Huf
         lengths[LENGTH_ORDER[idx as usize]] = reader.read_bits(3)? as u8;
     }
 
-    let length_huffman_table = HuffmanTable::from_lengths(&lengths);
-    let length_huffman_tree = HuffmanTree::from(&length_huffman_table);
+    let length_table = HuffmanTable::from_lengths(&lengths);
+    let length_huffman_tree = HuffmanTree::from(&length_table);
 
     // Read the table for the alphabet.
     let mut lengths = Vec::new();

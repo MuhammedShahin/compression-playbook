@@ -49,7 +49,7 @@ impl std::fmt::Display for PrefixCode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "\nPrefixCode {{ code: {:b}, length: {} }}\n",
+            "PrefixCode {{ code: {:07b}, length: {} }}",
             self.code, self.length
         )
     }
@@ -59,14 +59,14 @@ impl std::fmt::Debug for PrefixCode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "\nPrefixCode {{ code: {:b}, length: {} }}\n",
+            "PrefixCode {{ code: {:07b}, length: {} }}",
             self.code, self.length
         )
     }
 }
 
 impl HuffmanTree {
-    pub fn build(freqs: &[u32], max_code_length: u32) -> HuffmanTree {
+    pub fn build(freqs: &[u32], max_code_length: usize) -> HuffmanTree {
         let num_symbols = freqs.len();
         let capacity = 2 * num_symbols - 1;
 
