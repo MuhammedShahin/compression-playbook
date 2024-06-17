@@ -3,19 +3,20 @@ use crate::huffman::{HuffmanTable, HuffmanTree};
 use std::io::{Read, Seek, Write};
 
 const NUM_LITERAL_SYMBOLS: usize = 286;
-const NUM_DISTANCE_SYMBOLS: usize = 19;
+const NUM_LENGTH_SYMBOLS: usize = 19;
+const NUM_DISTANCE_SYMBOLS: usize = 30;
 const EOF: usize = 256;
 
-const REPEAT_PREV_3_6_SYMBOL: u64 = 16;
+const REPEAT_PREV_3_6_SYMBOL: u16 = 16;
 const REPEAT_PREV_3_6_ARG_LEN: usize = 2;
 
-const REPEAT_0_CODELEN_3_10_SYMBOL: u64 = 17;
+const REPEAT_0_CODELEN_3_10_SYMBOL: u16 = 17;
 const REPEAT_0_CODELEN_3_10_ARG_LEN: usize = 3;
 
-const REPEAT_0_CODELEN_11_138_SYMBOL: u64 = 18;
+const REPEAT_0_CODELEN_11_138_SYMBOL: u16 = 18;
 const REPEAT_0_CODELEN_11_138_ARG_LEN: usize = 7;
 
-const LENGTH_ORDER: [usize; 19] = [
+const LENGTH_ORDER: [usize; NUM_LENGTH_SYMBOLS] = [
     16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
 ];
 
@@ -111,25 +112,17 @@ fn compress_block<W: Write>(
 ) -> std::io::Result<bool> {
     let info = compress_block_gen_symbols(reader, block, options)?;
 
-    let literal_table = {
-        let literal_tree = HuffmanTree::build(
-            &block.literal_freqs[0..info.num_literal_codes],
-            MAX_CODE_LENGTH,
-        );
-        let mut literal_table = HuffmanTable::from(&literal_tree);
-        literal_table.canonicalize();
-        literal_table
-    };
+    let literal_table = HuffmanTable::build_length_limited(
+        &block.literal_freqs[0..info.num_literal_codes],
+        MAX_CODE_LENGTH,
+    )
+    .unwrap();
 
-    let distance_table = {
-        let distance_tree = HuffmanTree::build(
-            &block.distance_freqs[0..info.num_distance_codes],
-            MAX_CODE_LENGTH,
-        );
-        let mut distance_table = HuffmanTable::from(&distance_tree);
-        distance_table.canonicalize();
-        distance_table
-    };
+    let distance_table = HuffmanTable::build_length_limited(
+        &block.distance_freqs[0..info.num_distance_codes],
+        MAX_CODE_LENGTH,
+    )
+    .unwrap();
 
     let bfinal = is_end_of_file(reader)?;
     writer.write_bits((bfinal as u64) | 0b100, 3)?; // Write BFINAL and BTYPE
@@ -237,7 +230,7 @@ fn write_huffman_tables<W: Write>(
     // Write HDIST (number of distant codes - 1)
     writer.write_bits((info.num_distance_codes - 1) as u64, 5)?;
 
-    let mut lengths_freqs: [u32; 19] = [0; 19];
+    let mut lengths_freqs: [u32; NUM_LENGTH_SYMBOLS] = [0; NUM_LENGTH_SYMBOLS];
 
     let literal_table_lengths_symbols =
         compress_huffman_table_gen_symbols(literal_table, &mut lengths_freqs);
@@ -258,12 +251,8 @@ fn write_huffman_tables<W: Write>(
     // Write HCLEN (number of code length codes - 4)
     writer.write_bits((num_code_length_codes - 4) as u64, 4)?;
 
-    let length_table = {
-        let mut table =
-            HuffmanTable::from(&HuffmanTree::build(&lengths_freqs, MAX_LENGTH_CODE_LENGTH));
-        table.canonicalize();
-        table
-    };
+    let length_table =
+        HuffmanTable::build_length_limited(&lengths_freqs, MAX_LENGTH_CODE_LENGTH).unwrap();
 
     // Write code lengths for the code lengths alphabet
     for idx in 0..num_code_length_codes {
@@ -272,6 +261,8 @@ fn write_huffman_tables<W: Write>(
             CODE_LENGTH_CODE_LENGTH_LEN,
         )?;
     }
+
+    // print_header_symbols(&literal_table_lengths_symbols, &length_table);
 
     // Write code lengths for the literal/length alphabet.
     write_huffman_length_symbols(writer, &literal_table_lengths_symbols, &length_table)?;
@@ -361,7 +352,7 @@ fn write_huffman_length_symbols<W: Write>(
         let code = length_table.code(symbol as usize);
         writer.write_bits(code.code as u64, code.length as usize)?;
 
-        match symbol as u64 {
+        match symbol {
             REPEAT_PREV_3_6_SYMBOL => {
                 i += 1;
                 writer.write_bits(symbols[i] as u64, REPEAT_PREV_3_6_ARG_LEN)?;
@@ -384,13 +375,13 @@ fn write_huffman_length_symbols<W: Write>(
 }
 
 fn read_huffman_table<R: Read>(reader: &mut BitReader<R>) -> std::io::Result<HuffmanTable> {
-    let num_literals = reader.read_bits(5)? + 257; // HLIT
-    let num_distance_codes = reader.read_bits(5)? + 1; // HDIST
-    let num_code_length_codes = reader.read_bits(4)? + 4; // HCLEN
+    let num_literals = (reader.read_bits(5)? + 257) as usize; // HLIT
+    let num_distance_codes = (reader.read_bits(5)? + 1) as usize; // HDIST
+    let num_code_length_codes = (reader.read_bits(4)? + 4) as usize; // HCLEN
+
+    let mut lengths = [0; NUM_LITERAL_SYMBOLS];
 
     // Read the table for the alphabet lengths.
-    let mut lengths = [0; 19];
-
     for idx in 0..num_code_length_codes {
         lengths[LENGTH_ORDER[idx as usize]] = reader.read_bits(3)? as u8;
     }
@@ -398,10 +389,9 @@ fn read_huffman_table<R: Read>(reader: &mut BitReader<R>) -> std::io::Result<Huf
     let length_table = HuffmanTable::from_lengths(&lengths);
     let length_huffman_tree = HuffmanTree::from(&length_table);
 
-    // Read the table for the alphabet.
-    let mut lengths = Vec::new();
-    lengths.reserve((num_literals) as usize);
+    // let mut symbols = Vec::new();
 
+    // Read the table for the alphabet.
     let mut literal_idx = 0;
     while literal_idx < num_literals {
         let mut iter = length_huffman_tree.create_walk_iter();
@@ -410,36 +400,48 @@ fn read_huffman_table<R: Read>(reader: &mut BitReader<R>) -> std::io::Result<Huf
             let bit = reader.read_bits(1)? != 0;
             iter = length_huffman_tree.walk(iter, bit).unwrap();
         }
+        let code_length = iter.idx as u16;
 
-        let code_length = iter.idx as u64;
-        if code_length < 16 {
-            lengths.push(code_length as u8);
-            literal_idx += 1;
-        } else if code_length == REPEAT_PREV_3_6_SYMBOL {
-            let num_repeated = reader.read_bits(REPEAT_PREV_3_6_ARG_LEN)? + 3;
-            let prev_length = *lengths.last().unwrap();
+        // symbols.push(code_length);
 
-            for _ in 0..num_repeated {
-                lengths.push(prev_length as u8)
+        match code_length {
+            0..=15 => {
+                lengths[literal_idx] = code_length as u8;
+                literal_idx += 1;
             }
+            REPEAT_PREV_3_6_SYMBOL => {
+                let num_repeated = (reader.read_bits(REPEAT_PREV_3_6_ARG_LEN)? + 3) as usize;
+                let prev_length = lengths[literal_idx - 1];
 
-            literal_idx += num_repeated;
-        } else if code_length == REPEAT_0_CODELEN_3_10_SYMBOL {
-            let num_repeated = reader.read_bits(REPEAT_0_CODELEN_3_10_ARG_LEN)? + 3;
-            for _ in 0..num_repeated {
-                lengths.push(0)
+                lengths[literal_idx..literal_idx + num_repeated].fill(prev_length as u8);
+                literal_idx += num_repeated;
+
+                // symbols.push((num_repeated - 3) as u16);
             }
+            REPEAT_0_CODELEN_3_10_SYMBOL => {
+                let num_repeated = (reader.read_bits(REPEAT_0_CODELEN_3_10_ARG_LEN)? + 3) as usize;
 
-            literal_idx += num_repeated;
-        } else if code_length == REPEAT_0_CODELEN_11_138_SYMBOL {
-            let num_repeated = reader.read_bits(REPEAT_0_CODELEN_11_138_ARG_LEN)? + 11;
-            for _ in 0..num_repeated {
-                lengths.push(0)
+                lengths[literal_idx..literal_idx + num_repeated].fill(0);
+                literal_idx += num_repeated;
+
+                // symbols.push((num_repeated - 3) as u16);
             }
+            REPEAT_0_CODELEN_11_138_SYMBOL => {
+                let num_repeated =
+                    (reader.read_bits(REPEAT_0_CODELEN_11_138_ARG_LEN)? + 11) as usize;
 
-            literal_idx += num_repeated;
+                lengths[literal_idx..literal_idx + num_repeated].fill(0);
+                literal_idx += num_repeated;
+
+                // symbols.push((num_repeated - 11) as u16);
+            }
+            _ => {
+                panic!("Unknown header length symbol: {}", code_length);
+            }
         }
     }
+
+    // print_header_symbols(&symbols, &length_table);
 
     // TODO: Not supported yet
     for _ in 0..num_distance_codes {
@@ -453,5 +455,53 @@ fn read_huffman_table<R: Read>(reader: &mut BitReader<R>) -> std::io::Result<Huf
         // TODO
     }
 
-    Ok(HuffmanTable::from_lengths(&lengths))
+    Ok(HuffmanTable::from_lengths(&lengths[0..num_literals]))
+}
+
+#[allow(dead_code)]
+fn print_header_symbols(symbols: &[u16], table: &HuffmanTable) {
+    let mut idx = 0;
+
+    println!("start header");
+    while idx < symbols.len() {
+        let symbol = symbols[idx];
+
+        match symbol {
+            0_u16..=15_u16 => {
+                println!(
+                    "{:<16}! {:?}",
+                    format!("lens {}", symbol),
+                    table.code(symbol as usize)
+                );
+            }
+            REPEAT_PREV_3_6_SYMBOL => {
+                idx += 1;
+                println!(
+                    "{:<16}! {:?}",
+                    format!("repeat {}", symbols[idx] + 3),
+                    table.code(symbol as usize)
+                );
+            }
+            REPEAT_0_CODELEN_3_10_SYMBOL => {
+                idx += 1;
+                println!(
+                    "{:<16}! {:?}",
+                    format!("zeros {}", symbols[idx] + 3),
+                    table.code(symbol as usize)
+                );
+            }
+            REPEAT_0_CODELEN_11_138_SYMBOL => {
+                idx += 1;
+                println!(
+                    "{:<16}! {:?}",
+                    format!("zeros {}", symbols[idx] + 11),
+                    table.code(symbol as usize)
+                );
+            }
+            _ => {}
+        }
+
+        idx += 1;
+    }
+    println!("end header\n");
 }

@@ -1,3 +1,4 @@
+use crate::package_merge::{package_merge, PackageMergeError};
 use std::collections::binary_heap::BinaryHeap;
 
 pub struct HuffmanTree {
@@ -8,7 +9,6 @@ pub struct HuffmanTree {
 #[derive(Debug, Default)]
 pub struct HuffmanTable {
     pub codes: Vec<PrefixCode>,
-    pub lengths_count: [u32; 32],
 }
 
 #[derive(Default, Clone, Copy)]
@@ -45,28 +45,17 @@ impl PrefixCode {
     }
 }
 
-impl std::fmt::Display for PrefixCode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "PrefixCode {{ code: {:07b}, length: {} }}",
-            self.code, self.length
-        )
-    }
-}
-
 impl std::fmt::Debug for PrefixCode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "PrefixCode {{ code: {:07b}, length: {} }}",
-            self.code, self.length
-        )
+        for i in 0..self.length {
+            write!(f, "{}", (self.code & ((1 as u32) << i)) >> i)?;
+        }
+        Ok(())
     }
 }
 
 impl HuffmanTree {
-    pub fn build(freqs: &[u32], max_code_length: usize) -> HuffmanTree {
+    pub fn build(freqs: &[u32]) -> HuffmanTree {
         let num_symbols = freqs.len();
         let capacity = 2 * num_symbols - 1;
 
@@ -76,19 +65,7 @@ impl HuffmanTree {
         // Reverse so that it becomes a min heap.
         let mut heap = BinaryHeap::<std::cmp::Reverse<HeapEntry>>::new();
 
-        // Maximum allowable frequency so that we can't get a code length > max_code_length
-        // The worst possible case is that we have frequencies that look like this:
-        //      1, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, ....
-        // In this case would have a single code for each code length.
-        // This solution sets a limit on the maximum allowable frequency by normalizing frequencies
-        // to be in an acceptable range.
-        let max_allowable_freq = 1 << (max_code_length - 1);
-        let mut max_freq = 0;
-
-        // We first add the leaf nodes, and create binary heap with the nodes.
         for (idx, freq) in freqs.iter().enumerate() {
-            max_freq = max_freq.max(*freq);
-
             nodes.push(Node {
                 left: None,
                 right: None,
@@ -100,18 +77,6 @@ impl HuffmanTree {
                     freq: (*freq).into(),
                     idx: idx as u32,
                 }));
-            }
-        }
-
-        if max_freq > max_allowable_freq {
-            let ratio = (max_freq + max_allowable_freq - 1) / max_allowable_freq;
-
-            for heap_entry in heap.iter() {
-                let freq = heap_entry.0.freq.get();
-
-                // Division maintains heap order.
-                // This can be optimized to use shifting instead of integer division
-                heap_entry.0.freq.replace((freq + ratio - 1) / ratio);
             }
         }
 
@@ -176,13 +141,29 @@ impl HuffmanTree {
 }
 
 impl HuffmanTable {
+    pub fn build_length_limited(
+        freqs: &[u32],
+        max_length: usize,
+    ) -> Result<Self, PackageMergeError> {
+        let lengths = package_merge(&freqs, max_length)?;
+
+        let table = Self::from_lengths(&lengths);
+
+        // Assert that we achieved the required lengths.
+        debug_assert!(table
+            .codes
+            .iter()
+            .all(|&code| code.length as usize <= max_length));
+
+        Ok(table)
+    }
+
     pub fn from_lengths(lengths: &[u8]) -> Self {
         let mut lengths_count: [u32; 32] = [0; 32];
         let mut codes = Vec::new();
         codes.reserve(lengths.len());
 
         for length in lengths {
-            assert!(*length < 32);
             lengths_count[*length as usize] += 1;
 
             codes.push(PrefixCode {
@@ -190,12 +171,9 @@ impl HuffmanTable {
                 length: *length,
             });
         }
-        let mut table = Self {
-            codes,
-            lengths_count,
-        };
+        let mut table = Self { codes };
 
-        table.canonicalize();
+        table.canonicalize_impl(&lengths_count);
 
         table
     }
@@ -218,11 +196,20 @@ impl HuffmanTable {
     }
 
     pub fn canonicalize(&mut self) {
+        let mut lengths_count: [u32; 32] = [0; 32];
+        for code in &self.codes {
+            lengths_count[code.length as usize] += 1;
+        }
+
+        self.canonicalize_impl(&lengths_count)
+    }
+
+    fn canonicalize_impl(&mut self, lengths_count: &[u32; 32]) {
         // Same implementation as in RFC1951 (but MAX_BITS is extended a little bit)
         let mut next_code: [u32; 32] = [0; 32];
 
         let mut code = 0;
-        for (idx, count) in self.lengths_count[1..].iter().enumerate() {
+        for (idx, count) in lengths_count[1..].iter().enumerate() {
             next_code[idx + 1] = code;
             code = (code + count) << 1;
         }
@@ -242,10 +229,7 @@ impl HuffmanTable {
 
 impl From<&HuffmanTree> for HuffmanTable {
     fn from(tree: &HuffmanTree) -> Self {
-        let mut table = HuffmanTable {
-            codes: Vec::new(),
-            lengths_count: [0; 32],
-        };
+        let mut table = HuffmanTable { codes: Vec::new() };
         // Is there a better way to directly initialize the vector in the above line?
         table.codes.resize(tree.num_symbols, PrefixCode::default());
 
@@ -255,10 +239,6 @@ impl From<&HuffmanTree> for HuffmanTable {
             PrefixCode::default(),
             &mut table,
         );
-
-        for code in &table.codes {
-            table.lengths_count[code.length as usize] += 1;
-        }
 
         return table;
     }

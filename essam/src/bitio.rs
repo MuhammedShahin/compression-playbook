@@ -112,7 +112,7 @@ impl<R: Read> BitReader<R> {
             .overflowing_shr((Self::BUF_NBITS - length) as u32)
             .0;
 
-        if length < self.length {
+        if length <= self.length {
             let return_value = self.buffer & mask;
 
             self.length -= length;
@@ -124,9 +124,9 @@ impl<R: Read> BitReader<R> {
             let read_bytes = self.read(&mut buffer_arr)?;
 
             let buffer = u64::from_le_bytes(buffer_arr);
-            let read_bits = 8 * read_bytes;
 
-            if length > self.length + length {
+            let read_bits = 8 * read_bytes;
+            if length > self.length + read_bits {
                 return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
             }
 
