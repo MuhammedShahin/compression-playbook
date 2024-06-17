@@ -1,8 +1,8 @@
 use std::{cmp::Ordering, collections::{BinaryHeap, HashMap}};
 
-#[derive(Eq, PartialEq)]
+#[derive(Eq, PartialEq, Clone)]
 pub struct Node {
-    character: Option<char>,
+    symbole: Option<u8>,
     freq: u32,
     left_node: Option<Box<Node>>,
     right_node: Option<Box<Node>>,
@@ -21,10 +21,33 @@ impl PartialOrd for Node {
 }
 
 
+#[derive(Clone, Copy)]
+pub struct PrefixCode {
+    code: u8,
+    length: u8
+}
+
+impl PrefixCode {
+    pub fn update(prefix_code: PrefixCode, bit: u8) -> PrefixCode {
+        if bit == 1 {
+            return PrefixCode {
+                code: (prefix_code.code << 1) + 1,
+                length: prefix_code.length + 1
+            }
+        }
+        else {
+            return PrefixCode {
+                code: prefix_code.code << 1,
+                length: prefix_code.length + 1
+            }
+        }
+    }
+}
+
+
 pub struct Huffman {
 
 }
-
 
 impl Huffman {
 
@@ -34,10 +57,10 @@ impl Huffman {
 
         let mut huffman_lookup = HashMap::new();
         if let Some(huffman_tree) = self.build_huffman_tree(symboles_queue) {
-            self.build_huffman_lookup(&huffman_tree, String::new(), &mut huffman_lookup);
+            self.build_huffman_lookup(&huffman_tree, PrefixCode {code: 0, length: 0}, &mut huffman_lookup);
         }
         for (character, prefix) in huffman_lookup {
-            println!("character: {:?}, prefix: {}, length: {}", character, prefix, prefix.len());
+            println!("character: {:?}, prefix: {:08b}, length: {}", character as char, prefix.code, prefix.length);
         }
 
     }
@@ -45,7 +68,7 @@ impl Huffman {
     fn analyz_symboles(&self, contents: String) -> BinaryHeap<Node> {
         let mut symboles_freq = HashMap::new();
 
-        for character in contents.chars() {
+        for character in contents.into_bytes() {
             let count = symboles_freq.entry(character).or_insert(0);
             *count += 1;
         }
@@ -53,7 +76,7 @@ impl Huffman {
         let mut symboles_queue = BinaryHeap::new();
         for (key, value) in &symboles_freq {
             symboles_queue.push(Node {
-                character: Some(*key),
+                symbole: Some(*key),
                 freq: *value,
                 left_node: None,
                 right_node: None,
@@ -69,7 +92,7 @@ impl Huffman {
             let right_node = symbols.pop().unwrap();
 
             let parent_node = Node {
-                character: None,
+                symbole: None,
                 freq: left_node.freq + right_node.freq,
                 left_node: Some(Box::new(left_node)),
                 right_node: Some(Box::new(right_node)),
@@ -81,15 +104,15 @@ impl Huffman {
         return symbols.pop();
     }
 
-    fn build_huffman_lookup(&self, node: &Node, prefix: String, hufmman_lookup: &mut HashMap<char, String>) {
-        if let Some(character) = node.character {
-            hufmman_lookup.insert(character, prefix);
+    fn build_huffman_lookup(&self, node: &Node, prefix: PrefixCode, hufmman_lookup: &mut HashMap<u8, PrefixCode>) {
+        if let Some(symbole) = node.symbole {
+            hufmman_lookup.insert(symbole, prefix);
         } else {
             if let Some(ref left_node) = node.left_node {
-                self.build_huffman_lookup(left_node, format!("{}0", prefix), hufmman_lookup);
+                self.build_huffman_lookup(left_node, PrefixCode::update(prefix, 0), hufmman_lookup);
             }
             if let Some(ref right_node) = node.right_node {
-                self.build_huffman_lookup(right_node, format!("{}1", prefix), hufmman_lookup);
+                self.build_huffman_lookup(right_node, PrefixCode::update(prefix, 1), hufmman_lookup);
             }
         }
     }
