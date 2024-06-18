@@ -1,5 +1,5 @@
-pub(self) type ElementType = u64;
-pub(self) const NUM_BITS: usize = std::mem::size_of::<ElementType>() * 8;
+type ElementType = u64;
+const NUM_BITS: usize = std::mem::size_of::<ElementType>() * 8;
 
 pub struct Bitset {
     data: Vec<ElementType>,
