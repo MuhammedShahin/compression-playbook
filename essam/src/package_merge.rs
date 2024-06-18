@@ -1,6 +1,7 @@
 // Implements the package-merge algorithm.
 //
 // Reference: A Fast Algorithm for Optimal Length-Limited Huffman Codes by Larmore/Hirschberg
+// Follows the implementation from: https://create.stephan-brumme.com/length-limited-prefix-codes/
 //
 // The Coin Collector Problem
 // ===========================
@@ -59,30 +60,13 @@
 // =====
 // Read the paper!
 
+use crate::bitset::Bitset;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum PackageMergeError {
     #[error("invalid requested max length")]
     InvalidMaxLength,
-}
-
-#[derive(Default, Clone, Copy, Debug)]
-struct Coin {
-    weight: u32,
-    id: u16,
-}
-
-#[derive(Default)]
-struct Package {
-    weight: u32,
-    coins: Vec<u16>,
-}
-
-#[derive(Copy, Clone, Default)]
-struct PureCoinOrPackageIdx {
-    idx: usize,
-    is_pure_coin: bool,
 }
 
 pub fn package_merge(freqs: &[u32], max_length: usize) -> Result<Vec<u8>, PackageMergeError> {
@@ -122,222 +106,128 @@ pub fn package_merge(freqs: &[u32], max_length: usize) -> Result<Vec<u8>, Packag
     }
 
     // Check if the requested max_length is possible
-    let least_allowable_max_length = {
-        let max_code = num_symbols - 1;
-        let num_bits = std::mem::size_of_val(&max_code) * 8; // = 64
-
-        num_bits - max_code.leading_zeros() as usize
-    };
-
-    if max_length < least_allowable_max_length {
+    if 1 << max_length < freqs.len() {
         return Err(PackageMergeError::InvalidMaxLength);
-    } else if max_length == least_allowable_max_length {
-        // If the required max length is the least allowable max length, then the only solution is
-        // to have all symbols with the same length.
+    } else if 1 << max_length == freqs.len() {
         return Ok(freqs
             .iter()
-            .map(|&freq| {
-                if freq != 0 {
-                    least_allowable_max_length as u8
-                } else {
-                    0 as u8
-                }
-            })
+            .map(|&freq| if freq != 0 { max_length as u8 } else { 0 as u8 })
             .collect());
     }
 
     // The original set of coins.
     let pure_coins = non_zero_order
         .iter()
-        .map(|&idx| Coin {
-            weight: freqs[idx as usize],
-            id: idx,
-        })
+        .map(|&idx| freqs[idx as usize])
         .collect::<Vec<_>>();
 
-    // The packages that was formed at the previous denomination.
-    let mut formed_packages_prev = Vec::<Package>::new();
-    formed_packages_prev.resize_with(num_symbols, || Package {
-        weight: 0,
-        coins: Vec::with_capacity(max_length),
-    });
-    let mut formed_packages_prev_len = 0;
+    let mut prev_coins = pure_coins.clone();
+    let mut cur_coins = Vec::with_capacity(2 * num_symbols);
 
-    // The packages that will be formed at the current denomination.
-    let mut formed_packages_cur = Vec::<Package>::new();
-    formed_packages_cur.resize_with(num_symbols, || Package {
-        weight: 0,
-        coins: Vec::with_capacity(max_length),
-    });
+    // Allocate bit mask for each level of size 2 * num_symbols.
+    // At level "l" the bit at position "i" represent whether the coin at this location is a
+    // package or not.
+    let mut merged_mask = Bitset::with_capacity(2 * num_symbols * max_length);
 
     // Process each denomination from the lowest value to the highest value.
-    for _ in 0..max_length - 1 {
-        let mut formed_packages_cur_len = 0;
+    let mut denom = 0;
+    while denom < max_length - 1 {
+        cur_coins.clear();
+        cur_coins.push(prev_coins[0]);
+        cur_coins.push(prev_coins[1]);
 
-        let mut coins_to_merge = [
-            PureCoinOrPackageIdx::default(),
-            PureCoinOrPackageIdx::default(),
-        ];
-        let mut is_first_coin = true;
+        let prev_coins_even_len = prev_coins.len() & !1;
+        let mut cur_package_weight = prev_coins[0] + prev_coins[1];
+        let mut cur_package_idx = 0;
+        let mut pure_coins_idx = 2;
 
-        let mut form_package = |idx: usize,
-                                is_pure_coin: bool,
-                                pure_coins: &[Coin],
-                                formed_packages_prev: &mut [Package]|
-         -> () {
-            let coins_to_merge_idx = if is_first_coin { 0 } else { 1 };
-            is_first_coin = !is_first_coin;
+        let mut bit_idx = 2 * num_symbols * denom + 2;
 
-            coins_to_merge[coins_to_merge_idx] = PureCoinOrPackageIdx { idx, is_pure_coin };
-
-            if coins_to_merge_idx == 0 {
-                return;
-            }
-
-            let first_coin_idx;
-            let second_coin_idx;
-
-            // Always make the package first
-            if coins_to_merge[0].is_pure_coin && !coins_to_merge[1].is_pure_coin {
-                first_coin_idx = coins_to_merge[1];
-                second_coin_idx = coins_to_merge[0];
+        while pure_coins_idx < pure_coins.len() {
+            if pure_coins[pure_coins_idx] < cur_package_weight {
+                cur_coins.push(pure_coins[pure_coins_idx]);
+                pure_coins_idx += 1;
+                bit_idx += 1;
             } else {
-                first_coin_idx = coins_to_merge[0];
-                second_coin_idx = coins_to_merge[1];
+                cur_coins.push(cur_package_weight);
+                merged_mask.insert(bit_idx);
+                bit_idx += 1;
+
+                cur_package_idx += 1;
+                if cur_package_idx * 2 >= prev_coins_even_len {
+                    break;
+                }
+                cur_package_weight =
+                    prev_coins[2 * cur_package_idx] + prev_coins[2 * cur_package_idx + 1];
             }
-
-            match (first_coin_idx, second_coin_idx) {
-                // If both are pure coins, then we create a new package for them.
-                (
-                    PureCoinOrPackageIdx {
-                        idx: idx1,
-                        is_pure_coin: true,
-                    },
-                    PureCoinOrPackageIdx {
-                        idx: idx2,
-                        is_pure_coin: true,
-                    },
-                ) => {
-                    let coin1 = &pure_coins[idx1];
-                    let coin2 = &pure_coins[idx2];
-                    let package = &mut formed_packages_cur[formed_packages_cur_len];
-
-                    package.weight = coin1.weight + coin2.weight;
-                    package.coins.resize(2, 0);
-                    package.coins[0] = idx1 as u16;
-                    package.coins[1] = idx2 as u16;
-
-                    formed_packages_cur_len += 1;
-                }
-                // If the first is a package, and the second is a coin.
-                (
-                    PureCoinOrPackageIdx {
-                        idx: package_idx,
-                        is_pure_coin: false,
-                    },
-                    PureCoinOrPackageIdx {
-                        idx: coin_idx,
-                        is_pure_coin: true,
-                    },
-                ) => {
-                    let coin = &pure_coins[coin_idx];
-
-                    std::mem::swap(
-                        &mut formed_packages_prev[package_idx],
-                        &mut formed_packages_cur[formed_packages_cur_len],
-                    );
-
-                    let package = &mut formed_packages_cur[formed_packages_cur_len];
-                    package.weight += coin.weight;
-                    package.coins.push(coin_idx as u16);
-
-                    formed_packages_cur_len += 1;
-                }
-                // If both are packages
-                (
-                    PureCoinOrPackageIdx {
-                        idx: idx1,
-                        is_pure_coin: false,
-                    },
-                    PureCoinOrPackageIdx {
-                        idx: idx2,
-                        is_pure_coin: false,
-                    },
-                ) => {
-                    std::mem::swap(
-                        &mut formed_packages_prev[idx1],
-                        &mut formed_packages_cur[formed_packages_cur_len],
-                    );
-
-                    let first_package = &mut formed_packages_cur[formed_packages_cur_len];
-                    let second_package = &formed_packages_prev[idx2];
-
-                    first_package.coins.extend(&second_package.coins);
-                    first_package.weight += second_package.weight;
-
-                    formed_packages_cur_len += 1;
-                }
-
-                _ => {
-                    panic!("This should never happen!");
-                }
-            }
-        };
-
-        merge(
-            &pure_coins,
-            &mut formed_packages_prev[..formed_packages_prev_len],
-            &mut form_package,
-        );
-
-        std::mem::swap(&mut formed_packages_prev, &mut formed_packages_cur);
-        formed_packages_prev_len = formed_packages_cur_len;
-    }
-
-    // Now we compute the length of each symbol by seeing how many times each coin was picked.
-    let mut lengths = vec![0; freqs.len()];
-    for coin in &pure_coins {
-        lengths[coin.id as usize] += 1;
-    }
-
-    // Only keep track of the first 2(N - 1) coins, out of which we have N pure coins, which mean
-    // that the number of required packages are N - 2.
-    let max_packages = num_symbols - 2;
-
-    for package in &formed_packages_prev[..max_packages] {
-        for coin_idx in &package.coins {
-            lengths[pure_coins[*coin_idx as usize].id as usize] += 1;
         }
+        // Add remaining coins
+        while pure_coins_idx < pure_coins.len() {
+            cur_coins.push(pure_coins[pure_coins_idx]);
+            pure_coins_idx += 1;
+            bit_idx += 1;
+        }
+        // Add remaining packages
+        loop {
+            cur_coins.push(cur_package_weight);
+            merged_mask.insert(bit_idx);
+
+            cur_package_idx += 1;
+            bit_idx += 1;
+
+            if cur_package_idx * 2 >= prev_coins_even_len {
+                break;
+            }
+            cur_package_weight =
+                prev_coins[2 * cur_package_idx] + prev_coins[2 * cur_package_idx + 1];
+        }
+
+        std::mem::swap(&mut cur_coins, &mut prev_coins);
+        denom += 1;
+
+        if cur_coins == prev_coins {
+            break;
+        }
+    }
+
+    // Using only the merged_mask we can deduce which coins were packaged at each level, and that
+    // contributed to the final result. This relies on the following observations:
+    // 1. The pure coins always maintain their relative order at each denomination after packaging/merging.
+    // 2. The coins that contribute to the packaging/merging at specific denomination are the first
+    //    2*num_merged coins of the denomination before it.
+    //
+    // By starting at the highest denomination, we can count the merged packages and trace back to
+    // the first 2*num_merged coins of the previous denomination to find the pure coins involved.
+    // This helps us infer the contributing coins of the previous denomination.
+    //
+    // The length of a symbol shows is the number of times its pure coin was part of the solution.
+
+    let mut sorted_lengths = vec![0; num_symbols];
+    let mut num_relevant_coins = 2 * (num_symbols - 1);
+
+    for denom in (0..denom).rev() {
+        let bit_from = 2 * num_symbols * denom;
+        let bit_to = bit_from + num_relevant_coins;
+
+        let num_merged = merged_mask.count_ones_sliced(bit_from, bit_to);
+        let num_not_merged = (bit_to - bit_from) - num_merged;
+
+        for length in sorted_lengths[0..num_not_merged].iter_mut() {
+            *length += 1;
+        }
+
+        num_relevant_coins = num_merged * 2;
+    }
+
+    // The smallest denomination has no packages.
+    for length in sorted_lengths[0..num_relevant_coins].iter_mut() {
+        *length += 1;
+    }
+
+    let mut lengths = vec![0; freqs.len()];
+    for idx in 0..sorted_lengths.len() {
+        lengths[non_zero_order[idx] as usize] = sorted_lengths[idx];
     }
 
     Ok(lengths)
-}
-
-fn merge(
-    coins: &[Coin],
-    packages: &mut [Package],
-    op: &mut impl FnMut(usize, bool, &[Coin], &mut [Package]),
-) {
-    let mut coins_idx = 0;
-    let mut packages_idx = 0;
-
-    while coins_idx < coins.len() && packages_idx < packages.len() {
-        let first = &coins[coins_idx];
-        let second = &packages[packages_idx];
-
-        if first.weight <= second.weight {
-            op(coins_idx, true, coins, packages);
-            coins_idx += 1;
-        } else {
-            op(packages_idx, false, coins, packages);
-            packages_idx += 1;
-        }
-    }
-    // Deal with left overs.
-    for idx in coins_idx..coins.len() {
-        op(idx, true, coins, packages);
-    }
-    for idx in packages_idx..packages.len() {
-        op(idx, false, coins, packages);
-    }
 }

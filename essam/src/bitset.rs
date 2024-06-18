@@ -1,10 +1,13 @@
+pub(self) type ElementType = u64;
+pub(self) const NUM_BITS: usize = std::mem::size_of::<ElementType>() * 8;
+
 pub struct Bitset {
-    data: Vec<u64>,
+    data: Vec<ElementType>,
 }
 
 struct BitsetIterator<'a> {
     bitset: &'a Bitset,
-    current_data: u64,
+    current_data: ElementType,
     data_idx: usize,
 }
 
@@ -15,44 +18,50 @@ impl std::fmt::Debug for Bitset {
 }
 
 impl Bitset {
-    pub(self) const NUM_BITS: usize = std::mem::size_of::<u64>() * 8;
-
     pub fn with_capacity(capacity: usize) -> Self {
-        let len = (capacity + Self::NUM_BITS - 1) / Self::NUM_BITS;
+        let len = (capacity + NUM_BITS - 1) / NUM_BITS;
         Bitset { data: vec![0; len] }
     }
 
     pub fn contains(&self, value: &usize) -> bool {
-        let byte_idx = value / Self::NUM_BITS;
-        let bit_idx = value % Self::NUM_BITS;
+        let byte_idx = value / NUM_BITS;
+        let bit_idx = value % NUM_BITS;
 
         if byte_idx >= self.data.len() {
             false
         } else {
-            (self.data[byte_idx] & ((1 as u64) << bit_idx)) != 0
+            (self.data[byte_idx] & ((1 as ElementType) << bit_idx)) != 0
         }
     }
 
     pub fn insert(&mut self, value: usize) {
-        let byte_idx = value / Self::NUM_BITS;
-        let bit_idx = value % Self::NUM_BITS;
+        let byte_idx = value / NUM_BITS;
+        let bit_idx = value % NUM_BITS;
 
         if byte_idx >= self.data.len() {
             self.data.resize(byte_idx + 1, 0);
         }
 
-        self.data[byte_idx] |= (1 as u64) << bit_idx;
+        self.data[byte_idx] |= (1 as ElementType) << bit_idx;
+    }
+
+    pub fn set(&mut self, value: usize) {
+        self.insert(value)
     }
 
     pub fn remove(&mut self, value: usize) {
-        let byte_idx = value / Self::NUM_BITS;
-        let bit_idx = value % Self::NUM_BITS;
+        let byte_idx = value / NUM_BITS;
+        let bit_idx = value % NUM_BITS;
 
         if byte_idx >= self.data.len() {
             return;
         }
 
-        self.data[byte_idx] &= !((1 as u64) << bit_idx);
+        self.data[byte_idx] &= !((1 as ElementType) << bit_idx);
+    }
+
+    pub fn clear(&mut self, value: usize) {
+        self.remove(value)
     }
 
     pub fn extend(&mut self, rhs: &Bitset) {
@@ -76,6 +85,49 @@ impl Bitset {
             data_idx: 0,
         }
     }
+
+    pub fn count_ones(&self) -> usize {
+        let mut count = 0;
+        for element in &self.data {
+            count += element.count_ones() as usize;
+        }
+        count
+    }
+
+    pub fn count_ones_sliced(&self, from: usize, to: usize) -> usize {
+        debug_assert!(to >= from);
+
+        let byte_from = from / NUM_BITS;
+        let byte_to = to / NUM_BITS;
+        let bit_from = (from % NUM_BITS) as u32;
+        let bit_to = (to % NUM_BITS) as u32; // exclusive
+
+        let all_ones = !(0 as ElementType);
+        let first_byte_mask = all_ones.overflowing_shl(bit_from).0;
+        // Shift value here can be 64, which is behaves differently, so split the shift to two parts.
+        let last_byte_mask = all_ones
+            .overflowing_shr(NUM_BITS as u32 - bit_to - 1)
+            .0
+            .overflowing_shr(1)
+            .0;
+
+        let mut count = 0;
+        if byte_to > byte_from {
+            // Count bits from the first byte
+            count += (self.data[byte_from] & first_byte_mask).count_ones() as usize;
+            // Count bits from the last byte
+            count += (self.data[byte_to] & last_byte_mask).count_ones() as usize;
+
+            for element in &self.data[(byte_from + 1)..byte_to] {
+                count += element.count_ones() as usize;
+            }
+        } else {
+            count +=
+                (self.data[byte_from] & first_byte_mask & last_byte_mask).count_ones() as usize;
+        }
+
+        count
+    }
 }
 
 impl std::ops::BitOrAssign<&Self> for Bitset {
@@ -98,9 +150,9 @@ impl<'a> std::iter::Iterator for BitsetIterator<'a> {
             self.current_data = self.bitset.data[self.data_idx];
         }
 
-        let bit_idx = Bitset::NUM_BITS - self.current_data.leading_zeros() as usize - 1;
-        self.current_data &= !((1 as u64) << bit_idx);
+        let bit_idx = NUM_BITS - self.current_data.leading_zeros() as usize - 1;
+        self.current_data &= !((1 as ElementType) << bit_idx);
 
-        Some(self.data_idx * Bitset::NUM_BITS + bit_idx)
+        Some(self.data_idx * NUM_BITS + bit_idx)
     }
 }
