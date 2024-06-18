@@ -67,17 +67,23 @@ pub enum PackageMergeError {
     InvalidMaxLength,
 }
 
-const INVALID_ID: u16 = std::u16::MAX;
-const INVALID_PACKAGE_IDX: u16 = std::u16::MAX;
-
-#[derive(Clone, Copy, Debug)]
-struct CoinOrPackage {
+#[derive(Default, Clone, Copy, Debug)]
+struct Coin {
     weight: u32,
     id: u16,
-    package_idx: u16,
 }
 
-type Package = Vec<u16>;
+#[derive(Default)]
+struct Package {
+    weight: u32,
+    coins: Vec<u16>,
+}
+
+#[derive(Copy, Clone, Default)]
+struct PureCoinOrPackageIdx {
+    idx: usize,
+    is_pure_coin: bool,
+}
 
 pub fn package_merge(freqs: &[u32], max_length: usize) -> Result<Vec<u8>, PackageMergeError> {
     // Handle trivial cases with having only one or two symbols.
@@ -107,6 +113,14 @@ pub fn package_merge(freqs: &[u32], max_length: usize) -> Result<Vec<u8>, Packag
 
     let num_symbols = non_zero_order.len();
 
+    // Handle trivial cases with having only one or two symbols.
+    if num_symbols <= 2 {
+        return Ok(freqs
+            .iter()
+            .map(|&freq| if freq > 0 { 1 } else { 0 })
+            .collect());
+    }
+
     // Check if the requested max_length is possible
     let least_allowable_max_length = {
         let max_code = num_symbols - 1;
@@ -132,204 +146,198 @@ pub fn package_merge(freqs: &[u32], max_length: usize) -> Result<Vec<u8>, Packag
             .collect());
     }
 
-    // Only keep track of the first 2(N - 1) coins.
-    let max_num_coins = 2 * (num_symbols - 1);
-
     // The original set of coins.
-    let original_coins = non_zero_order
+    let pure_coins = non_zero_order
         .iter()
-        .map(|&idx| CoinOrPackage {
+        .map(|&idx| Coin {
             weight: freqs[idx as usize],
             id: idx,
-            package_idx: INVALID_PACKAGE_IDX,
         })
         .collect::<Vec<_>>();
 
-    // Coins of the current denomination. We start with denomination 2^-L
-    let mut current_coins = original_coins.clone();
+    // The packages that was formed at the previous denomination.
+    let mut formed_packages_prev = Vec::<Package>::new();
+    formed_packages_prev.resize_with(num_symbols, || Package {
+        weight: 0,
+        coins: Vec::with_capacity(max_length),
+    });
+    let mut formed_packages_prev_len = 0;
 
-    // The packages that was formed at the denomination being processed.
-    let mut formed_packages = Vec::<CoinOrPackage>::new();
-
-    // The data of the packaged coins. These encode which coins were merged to form the package.
-    let mut packages_data = Vec::<Package>::new();
+    // The packages that will be formed at the current denomination.
+    let mut formed_packages_cur = Vec::<Package>::new();
+    formed_packages_cur.resize_with(num_symbols, || Package {
+        weight: 0,
+        coins: Vec::with_capacity(max_length),
+    });
 
     // Process each denomination from the lowest value to the highest value.
     for _ in 0..max_length - 1 {
-        formed_packages.clear();
+        let mut formed_packages_cur_len = 0;
 
-        // Package every two consecutive coins.
-        for half_coin_idx in 0..(current_coins.len() / 2) {
-            let first_coin = &current_coins[half_coin_idx * 2];
-            let second_coin = &current_coins[half_coin_idx * 2 + 1];
+        let mut coins_to_merge = [
+            PureCoinOrPackageIdx::default(),
+            PureCoinOrPackageIdx::default(),
+        ];
+        let mut is_first_coin = true;
 
-            match (first_coin, second_coin) {
+        let mut form_package = |idx: usize,
+                                is_pure_coin: bool,
+                                pure_coins: &[Coin],
+                                formed_packages_prev: &mut [Package]|
+         -> () {
+            let coins_to_merge_idx = if is_first_coin { 0 } else { 1 };
+            is_first_coin = !is_first_coin;
+
+            coins_to_merge[coins_to_merge_idx] = PureCoinOrPackageIdx { idx, is_pure_coin };
+
+            if coins_to_merge_idx == 0 {
+                return;
+            }
+
+            let first_coin_idx;
+            let second_coin_idx;
+
+            // Always make the package first
+            if coins_to_merge[0].is_pure_coin && !coins_to_merge[1].is_pure_coin {
+                first_coin_idx = coins_to_merge[1];
+                second_coin_idx = coins_to_merge[0];
+            } else {
+                first_coin_idx = coins_to_merge[0];
+                second_coin_idx = coins_to_merge[1];
+            }
+
+            match (first_coin_idx, second_coin_idx) {
                 // If both are pure coins, then we create a new package for them.
                 (
-                    CoinOrPackage {
-                        weight: first_weight,
-                        id: first_id,
-                        package_idx: INVALID_PACKAGE_IDX,
+                    PureCoinOrPackageIdx {
+                        idx: idx1,
+                        is_pure_coin: true,
                     },
-                    CoinOrPackage {
-                        weight: second_weight,
-                        id: second_id,
-                        package_idx: INVALID_PACKAGE_IDX,
+                    PureCoinOrPackageIdx {
+                        idx: idx2,
+                        is_pure_coin: true,
                     },
                 ) => {
-                    let mut package = Package::with_capacity(num_symbols);
+                    let coin1 = &pure_coins[idx1];
+                    let coin2 = &pure_coins[idx2];
+                    let package = &mut formed_packages_cur[formed_packages_cur_len];
 
-                    package.push(*first_id);
-                    package.push(*second_id);
+                    package.weight = coin1.weight + coin2.weight;
+                    package.coins.resize(2, 0);
+                    package.coins[0] = idx1 as u16;
+                    package.coins[1] = idx2 as u16;
 
-                    packages_data.push(package);
-                    formed_packages.push(CoinOrPackage {
-                        weight: first_weight + second_weight,
-                        id: INVALID_ID,
-                        package_idx: (packages_data.len() - 1) as u16,
-                    });
+                    formed_packages_cur_len += 1;
                 }
                 // If the first is a package, and the second is a coin.
                 (
-                    CoinOrPackage {
-                        weight: first_weight,
-                        id: INVALID_ID,
-                        package_idx,
+                    PureCoinOrPackageIdx {
+                        idx: package_idx,
+                        is_pure_coin: false,
                     },
-                    CoinOrPackage {
-                        weight: second_weight,
-                        id: second_id,
-                        package_idx: INVALID_PACKAGE_IDX,
+                    PureCoinOrPackageIdx {
+                        idx: coin_idx,
+                        is_pure_coin: true,
                     },
                 ) => {
-                    let package = &mut packages_data[*package_idx as usize];
+                    let coin = &pure_coins[coin_idx];
 
-                    package.push(*second_id);
+                    std::mem::swap(
+                        &mut formed_packages_prev[package_idx],
+                        &mut formed_packages_cur[formed_packages_cur_len],
+                    );
 
-                    formed_packages.push(CoinOrPackage {
-                        weight: first_weight + second_weight,
-                        id: INVALID_ID,
-                        package_idx: *package_idx,
-                    });
-                }
-                // If the second is a package, and the first is a coin.
-                (
-                    CoinOrPackage {
-                        weight: first_weight,
-                        id: first_id,
-                        package_idx: INVALID_PACKAGE_IDX,
-                    },
-                    CoinOrPackage {
-                        weight: second_weight,
-                        id: INVALID_ID,
-                        package_idx,
-                    },
-                ) => {
-                    let package = &mut packages_data[*package_idx as usize];
+                    let package = &mut formed_packages_cur[formed_packages_cur_len];
+                    package.weight += coin.weight;
+                    package.coins.push(coin_idx as u16);
 
-                    package.push(*first_id);
-
-                    formed_packages.push(CoinOrPackage {
-                        weight: first_weight + second_weight,
-                        id: INVALID_ID,
-                        package_idx: *package_idx,
-                    });
+                    formed_packages_cur_len += 1;
                 }
                 // If both are packages
                 (
-                    CoinOrPackage {
-                        weight: first_weight,
-                        id: INVALID_ID,
-                        package_idx: first_package_idx,
+                    PureCoinOrPackageIdx {
+                        idx: idx1,
+                        is_pure_coin: false,
                     },
-                    CoinOrPackage {
-                        weight: second_weight,
-                        id: INVALID_ID,
-                        package_idx: second_package_idx,
+                    PureCoinOrPackageIdx {
+                        idx: idx2,
+                        is_pure_coin: false,
                     },
                 ) => {
-                    // This is not valid rust because I can't hold immutable and mutable references
-                    // from the same vector.
-                    //      let first_package = &mut packages_data[*first_package_idx as usize];
-                    //      let second_package = &packages_data[*second_package_idx as usize];
-                    //  So instead we do this hack, which destroys the package, but that's ok:
-                    let mut first_package = Package::with_capacity(0);
                     std::mem::swap(
-                        &mut packages_data[*first_package_idx as usize],
-                        &mut first_package,
+                        &mut formed_packages_prev[idx1],
+                        &mut formed_packages_cur[formed_packages_cur_len],
                     );
-                    let second_package = &mut packages_data[*second_package_idx as usize];
 
-                    second_package.extend(&first_package);
+                    let first_package = &mut formed_packages_cur[formed_packages_cur_len];
+                    let second_package = &formed_packages_prev[idx2];
 
-                    formed_packages.push(CoinOrPackage {
-                        weight: first_weight + second_weight,
-                        id: INVALID_ID,
-                        package_idx: *second_package_idx,
-                    });
+                    first_package.coins.extend(&second_package.coins);
+                    first_package.weight += second_package.weight;
+
+                    formed_packages_cur_len += 1;
                 }
+
                 _ => {
                     panic!("This should never happen!");
                 }
             }
-        }
+        };
 
-        // Merge original_coins with formed_packages into next_coins
-        current_coins.clear();
+        merge(
+            &pure_coins,
+            &mut formed_packages_prev[..formed_packages_prev_len],
+            &mut form_package,
+        );
 
-        let mut original_coins_idx = 0;
-        let mut formed_packages_idx = 0;
-
-        while original_coins_idx < original_coins.len()
-            && formed_packages_idx < formed_packages.len()
-            && current_coins.len() < max_num_coins
-        {
-            let original_coin = original_coins[original_coins_idx];
-            let formed_package = formed_packages[formed_packages_idx];
-
-            if original_coin.weight <= formed_package.weight {
-                current_coins.push(original_coin);
-                original_coins_idx += 1;
-            } else {
-                current_coins.push(formed_package);
-                formed_packages_idx += 1;
-            }
-        }
-        // Deal with left overs.
-        while original_coins_idx < original_coins.len() && current_coins.len() < max_num_coins {
-            current_coins.push(original_coins[original_coins_idx]);
-            original_coins_idx += 1;
-        }
-        while formed_packages_idx < formed_packages.len() && current_coins.len() < max_num_coins {
-            current_coins.push(formed_packages[formed_packages_idx]);
-            formed_packages_idx += 1;
-        }
+        std::mem::swap(&mut formed_packages_prev, &mut formed_packages_cur);
+        formed_packages_prev_len = formed_packages_cur_len;
     }
 
     // Now we compute the length of each symbol by seeing how many times each coin was picked.
     let mut lengths = vec![0; freqs.len()];
+    for coin in &pure_coins {
+        lengths[coin.id as usize] += 1;
+    }
 
-    for coin in current_coins {
-        match coin {
-            CoinOrPackage {
-                weight: _,
-                id,
-                package_idx: INVALID_PACKAGE_IDX,
-            } => {
-                lengths[id as usize] += 1;
-            }
-            CoinOrPackage {
-                weight: _,
-                id: _,
-                package_idx,
-            } => {
-                let package = &packages_data[package_idx as usize];
-                for id in package.iter() {
-                    lengths[*id as usize] += 1;
-                }
-            }
+    // Only keep track of the first 2(N - 1) coins, out of which we have N pure coins, which mean
+    // that the number of required packages are N - 2.
+    let max_packages = num_symbols - 2;
+
+    for package in &formed_packages_prev[..max_packages] {
+        for coin_idx in &package.coins {
+            lengths[pure_coins[*coin_idx as usize].id as usize] += 1;
         }
     }
 
     Ok(lengths)
+}
+
+fn merge(
+    coins: &[Coin],
+    packages: &mut [Package],
+    op: &mut impl FnMut(usize, bool, &[Coin], &mut [Package]),
+) {
+    let mut coins_idx = 0;
+    let mut packages_idx = 0;
+
+    while coins_idx < coins.len() && packages_idx < packages.len() {
+        let first = &coins[coins_idx];
+        let second = &packages[packages_idx];
+
+        if first.weight <= second.weight {
+            op(coins_idx, true, coins, packages);
+            coins_idx += 1;
+        } else {
+            op(packages_idx, false, coins, packages);
+            packages_idx += 1;
+        }
+    }
+    // Deal with left overs.
+    for idx in coins_idx..coins.len() {
+        op(idx, true, coins, packages);
+    }
+    for idx in packages_idx..packages.len() {
+        op(idx, false, coins, packages);
+    }
 }
