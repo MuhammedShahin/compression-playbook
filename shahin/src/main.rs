@@ -1,6 +1,8 @@
+pub mod bitio;
 pub mod huffman;
 use std::env;
 use std::fs;
+use std::io;
 
 use huffman::Huffman;
 
@@ -15,10 +17,33 @@ fn read_input_file() -> String {
     return contents;
 }
 
-fn main() {
+fn test_write_bits() -> io::Result<()> {
+
+    let file = fs::File::create("output.txt")?;
+    let mut bit_writer = bitio::BitWriter::new(file);
+
+    bit_writer.write_bits('A' as u8 , 8)?;
+    bit_writer.flush_buffer()?;
+
+    Ok(())
+}
+
+fn test_read_bits() -> io::Result<()> {
+
+    let file = fs::File::open("output.txt")?;
+    let mut bit_reader = bitio::BitReader::new(file);
+
+    if let Some(bits) = bit_reader.read_bits(8)? {
+        println!("bits: {:?}", bits as char);
+    }
+
+    Ok(())
+}
+
+fn main() -> io::Result<()> {
     let contents = read_input_file();
-    
     let huffman_encoding = Huffman{};
     huffman_encoding.encode(contents);
 
+    Ok(())
 }
