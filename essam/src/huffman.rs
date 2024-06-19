@@ -1,6 +1,7 @@
+use crate::nonmax::NonMaxU16;
 use crate::package_merge::{package_merge, PackageMergeError};
+
 use std::collections::binary_heap::BinaryHeap;
-use std::num::NonZeroU16;
 
 pub struct HuffmanTree {
     nodes: Vec<Node>,
@@ -27,8 +28,8 @@ pub struct WalkIterator {
 
 #[derive(Copy, Clone)]
 struct Node {
-    left: Option<NonZeroU16>,
-    right: Option<NonZeroU16>,
+    left: Option<NonMaxU16>,
+    right: Option<NonMaxU16>,
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
@@ -59,7 +60,7 @@ impl HuffmanTree {
     pub fn build(freqs: &[u32]) -> HuffmanTree {
         let num_symbols = freqs.len();
         let capacity = 2 * num_symbols - 1;
-        assert!(capacity <= std::u16::MAX.into());
+        assert!(capacity <= (std::u16::MAX - 1).into());
 
         let mut nodes = Vec::<Node>::new();
 
@@ -91,8 +92,8 @@ impl HuffmanTree {
 
             // Create internal node with children being the least two nodes.
             let internal_node = Node {
-                left: NonZeroU16::new(entry1.0.idx),
-                right: NonZeroU16::new(entry2.0.idx),
+                left: NonMaxU16::new(entry1.0.idx),
+                right: NonMaxU16::new(entry2.0.idx),
             };
 
             let internal_node_idx = nodes.len() as u16;
@@ -293,7 +294,7 @@ impl From<&HuffmanTable> for HuffmanTree {
                                 alloc_idx
                             };
 
-                            nodes[crawler_idx].left = NonZeroU16::new(node_idx as u16);
+                            nodes[crawler_idx].left = NonMaxU16::new(node_idx as u16);
                             crawler_idx = node_idx;
                         }
                         Some(idx) => {
@@ -311,7 +312,7 @@ impl From<&HuffmanTable> for HuffmanTree {
                                 alloc_idx
                             };
 
-                            nodes[crawler_idx].right = NonZeroU16::new(node_idx as u16);
+                            nodes[crawler_idx].right = NonMaxU16::new(node_idx as u16);
                             crawler_idx = node_idx;
                         }
                         Some(idx) => {

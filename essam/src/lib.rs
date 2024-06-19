@@ -5,3 +5,4 @@ pub mod gzip;
 pub mod huffman;
 pub mod package_merge;
 pub mod reverse_bits;
+pub mod nonmax;
