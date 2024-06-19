@@ -1,5 +1,6 @@
 use crate::package_merge::{package_merge, PackageMergeError};
 use std::collections::binary_heap::BinaryHeap;
+use std::num::NonZeroU16;
 
 pub struct HuffmanTree {
     nodes: Vec<Node>,
@@ -26,14 +27,14 @@ pub struct WalkIterator {
 
 #[derive(Copy, Clone)]
 struct Node {
-    left: Option<u32>,
-    right: Option<u32>,
+    left: Option<NonZeroU16>,
+    right: Option<NonZeroU16>,
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 struct HeapEntry {
     freq: std::cell::Cell<u32>,
-    idx: u32,
+    idx: u16,
 }
 
 impl PrefixCode {
@@ -58,8 +59,10 @@ impl HuffmanTree {
     pub fn build(freqs: &[u32]) -> HuffmanTree {
         let num_symbols = freqs.len();
         let capacity = 2 * num_symbols - 1;
+        assert!(capacity <= std::u16::MAX.into());
 
         let mut nodes = Vec::<Node>::new();
+
         nodes.reserve(capacity);
 
         // Reverse so that it becomes a min heap.
@@ -75,7 +78,7 @@ impl HuffmanTree {
             if *freq != 0 {
                 heap.push(std::cmp::Reverse(HeapEntry {
                     freq: (*freq).into(),
-                    idx: idx as u32,
+                    idx: idx as u16,
                 }));
             }
         }
@@ -88,11 +91,11 @@ impl HuffmanTree {
 
             // Create internal node with children being the least two nodes.
             let internal_node = Node {
-                left: Some(entry1.0.idx),
-                right: Some(entry2.0.idx),
+                left: NonZeroU16::new(entry1.0.idx),
+                right: NonZeroU16::new(entry2.0.idx),
             };
 
-            let internal_node_idx = nodes.len() as u32;
+            let internal_node_idx = nodes.len() as u16;
             heap.push(std::cmp::Reverse(HeapEntry {
                 freq: (entry1.0.freq.get() + entry2.0.freq.get()).into(),
                 idx: internal_node_idx,
@@ -120,13 +123,13 @@ impl HuffmanTree {
 
         if bit {
             if let Some(right) = self.nodes[iter.idx].right {
-                idx = right as usize;
+                idx = right.get().into();
             } else {
                 return None;
             }
         } else {
             if let Some(left) = self.nodes[iter.idx].left {
-                idx = left as usize;
+                idx = left.get().into();
             } else {
                 return None;
             }
@@ -187,11 +190,21 @@ impl HuffmanTable {
         let node = &tree.nodes[idx];
 
         if let Some(left) = node.left {
-            Self::build_impl(tree, left as usize, PrefixCode::update(code, false), table);
+            Self::build_impl(
+                tree,
+                left.get().into(),
+                PrefixCode::update(code, false),
+                table,
+            );
         }
 
         if let Some(right) = node.right {
-            Self::build_impl(tree, right as usize, PrefixCode::update(code, true), table);
+            Self::build_impl(
+                tree,
+                right.get().into(),
+                PrefixCode::update(code, true),
+                table,
+            );
         }
     }
 
@@ -280,12 +293,12 @@ impl From<&HuffmanTable> for HuffmanTree {
                                 alloc_idx
                             };
 
-                            nodes[crawler_idx].left = Some(node_idx as u32);
+                            nodes[crawler_idx].left = NonZeroU16::new(node_idx as u16);
                             crawler_idx = node_idx;
                         }
                         Some(idx) => {
                             assert!(bit_idx != code.length);
-                            crawler_idx = idx as usize;
+                            crawler_idx = idx.get().into();
                         }
                     }
                 } else {
@@ -298,12 +311,12 @@ impl From<&HuffmanTable> for HuffmanTree {
                                 alloc_idx
                             };
 
-                            nodes[crawler_idx].right = Some(node_idx as u32);
+                            nodes[crawler_idx].right = NonZeroU16::new(node_idx as u16);
                             crawler_idx = node_idx;
                         }
                         Some(idx) => {
                             assert!(bit_idx != code.length);
-                            crawler_idx = idx as usize;
+                            crawler_idx = idx.get().into();
                         }
                     }
                 }
