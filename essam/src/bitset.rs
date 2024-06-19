@@ -104,7 +104,7 @@ impl Bitset {
 
         let all_ones = !(0 as ElementType);
         let first_byte_mask = all_ones.overflowing_shl(bit_from).0;
-        // Shift value here can be 64, which is behaves differently, so split the shift to two parts.
+        // Shift value here can be 64, which behaves differently, so split the shift into two parts.
         let last_byte_mask = all_ones
             .overflowing_shr(NUM_BITS as u32 - bit_to - 1)
             .0

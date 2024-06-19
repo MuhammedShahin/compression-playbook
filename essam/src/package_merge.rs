@@ -7,8 +7,8 @@
 // ===========================
 // This algorithm maps the problem of building a length-limited huffman tree to the "Coin
 // Collector's Problem". In this problem, we have different coins of different denominations,
-// and different numismatic value. So if we go to a bank, all of the coins having the same
-// denomination are equivalent. But to us, some of these coins are more valuable than others.
+// and different numismatic value (weights). So if we go to a bank, all of the coins having the
+// same denomination are equivalent. But to us, some of these coins are more valuable than others.
 //
 // Suppose we want to buy something of cost X. Then the problem is to find the set of coins with
 // the least numismatic value that allows us to do as such.
@@ -224,6 +224,7 @@ pub fn package_merge(freqs: &[u32], max_length: usize) -> Result<Vec<u8>, Packag
         *length += 1;
     }
 
+    // Return the original order.
     let mut lengths = vec![0; freqs.len()];
     for idx in 0..sorted_lengths.len() {
         lengths[non_zero_order[idx] as usize] = sorted_lengths[idx];
