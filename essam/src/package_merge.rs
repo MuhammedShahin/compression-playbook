@@ -52,9 +52,8 @@
 // 1. Since we have to buy an item with integer value, we will have to keep packaging the coins until
 //    we get them to heighest denomination 2^-1. We will then choose the first 2(N - 1) coins with
 //    least numismatic values so that we can buy our item of cost N - 1.
-// 2. At any point in the packaging/merging process, if we get a group of coins/packages with size
-//    greater than 2(N - 1), then we can safely discard the coins with the highest numismatic
-//    values to bring the size back to 2(N - 1).
+// 2. We don't have to keep track of the list of coins a package contains. Instead, we use the
+//    trick explained by Stephen Brumme of using bit masks.
 //
 // Proof
 // =====
@@ -106,9 +105,11 @@ pub fn package_merge(freqs: &[u32], max_length: usize) -> Result<Vec<u8>, Packag
     }
 
     // Check if the requested max_length is possible
-    if 1 << max_length < freqs.len() {
+    let max_symbols_given_length = 1 << max_length;
+
+    if max_symbols_given_length < num_symbols {
         return Err(PackageMergeError::InvalidMaxLength);
-    } else if 1 << max_length == freqs.len() {
+    } else if max_symbols_given_length == num_symbols {
         return Ok(freqs
             .iter()
             .map(|&freq| if freq != 0 { max_length as u8 } else { 0 as u8 })
@@ -121,15 +122,21 @@ pub fn package_merge(freqs: &[u32], max_length: usize) -> Result<Vec<u8>, Packag
         .map(|&idx| freqs[idx as usize])
         .collect::<Vec<_>>();
 
+    // We only keep track of the coins in the current denomination and the previous denomination.
+    // Using the coins in the previous denomination, we can merge them with the original pure
+    // coins, and then merge them to get the coins in the current denomination.
     let mut prev_coins = pure_coins.clone();
     let mut cur_coins = Vec::with_capacity(2 * num_symbols);
 
-    // Allocate bit mask for each level of size 2 * num_symbols.
-    // At level "l" the bit at position "i" represent whether the coin at this location is a
-    // package or not.
+    // Allocate bit mask for each denmination of size 2 * num_symbols.
+    // At denomination index "denom" the bit at position "2 * num_symbols * denom + i" represents
+    // whether the coin at location "i" is a package or not.
     let mut merged_mask = Bitset::with_capacity(2 * num_symbols * max_length);
 
     // Process each denomination from the lowest value to the highest value.
+    // When denom = 0, the actual denomination of coins we're processing is 2^-max_length,
+    // until we reach denom = max_length - 1, at which point we process the highest denomination
+    // which is 2^-1
     let mut denom = 0;
     while denom < max_length - 1 {
         cur_coins.clear();
@@ -143,6 +150,9 @@ pub fn package_merge(freqs: &[u32], max_length: usize) -> Result<Vec<u8>, Packag
 
         let mut bit_idx = 2 * num_symbols * denom + 2;
 
+        // Package each two consecutive coins in the previous denom, and merge with the pure coins
+        // at the same time, adding the lowest weighted coin first. Stop when either the packaging
+        // ends or the merging ends.
         while pure_coins_idx < pure_coins.len() {
             if pure_coins[pure_coins_idx] < cur_package_weight {
                 cur_coins.push(pure_coins[pure_coins_idx]);
@@ -150,7 +160,7 @@ pub fn package_merge(freqs: &[u32], max_length: usize) -> Result<Vec<u8>, Packag
                 bit_idx += 1;
             } else {
                 cur_coins.push(cur_package_weight);
-                merged_mask.insert(bit_idx);
+                merged_mask.set(bit_idx);
                 bit_idx += 1;
 
                 cur_package_idx += 1;
@@ -161,25 +171,22 @@ pub fn package_merge(freqs: &[u32], max_length: usize) -> Result<Vec<u8>, Packag
                     prev_coins[2 * cur_package_idx] + prev_coins[2 * cur_package_idx + 1];
             }
         }
-        // Add remaining coins
+        // Merge remaining pure coins.
         while pure_coins_idx < pure_coins.len() {
             cur_coins.push(pure_coins[pure_coins_idx]);
             pure_coins_idx += 1;
             bit_idx += 1;
         }
-        // Add remaining packages
-        loop {
+        // Package remaining previous coins.
+        while cur_package_idx * 2 < prev_coins_even_len {
+            cur_package_weight =
+                prev_coins[2 * cur_package_idx] + prev_coins[2 * cur_package_idx + 1];
+
             cur_coins.push(cur_package_weight);
-            merged_mask.insert(bit_idx);
+            merged_mask.set(bit_idx);
 
             cur_package_idx += 1;
             bit_idx += 1;
-
-            if cur_package_idx * 2 >= prev_coins_even_len {
-                break;
-            }
-            cur_package_weight =
-                prev_coins[2 * cur_package_idx] + prev_coins[2 * cur_package_idx + 1];
         }
 
         std::mem::swap(&mut cur_coins, &mut prev_coins);
@@ -196,11 +203,11 @@ pub fn package_merge(freqs: &[u32], max_length: usize) -> Result<Vec<u8>, Packag
     // 2. The coins that contribute to the packaging/merging at specific denomination are the first
     //    2*num_merged coins of the denomination before it.
     //
-    // By starting at the highest denomination, we can count the merged packages and trace back to
+    // By starting at the last denomination, we can count the merged packages and trace back to
     // the first 2*num_merged coins of the previous denomination to find the pure coins involved.
     // This helps us infer the contributing coins of the previous denomination.
     //
-    // The length of a symbol shows is the number of times its pure coin was part of the solution.
+    // The length of a symbol is the number of times its pure coin was part of the solution.
 
     let mut sorted_lengths = vec![0; num_symbols];
     let mut num_relevant_coins = 2 * (num_symbols - 1);

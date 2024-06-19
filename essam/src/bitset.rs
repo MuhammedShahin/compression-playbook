@@ -60,7 +60,7 @@ impl Bitset {
         self.data[byte_idx] &= !((1 as ElementType) << bit_idx);
     }
 
-    pub fn clear(&mut self, value: usize) {
+    pub fn reset(&mut self, value: usize) {
         self.remove(value)
     }
 
@@ -84,6 +84,10 @@ impl Bitset {
             },
             data_idx: 0,
         }
+    }
+
+    pub fn first_set(&self) -> Option<usize> {
+        self.iter().next()
     }
 
     pub fn count_ones(&self) -> usize {
