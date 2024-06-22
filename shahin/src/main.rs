@@ -43,7 +43,9 @@ fn test_read_bits() -> io::Result<()> {
 fn main() -> io::Result<()> {
     let contents = read_input_file();
     let huffman_encoding = Huffman{};
-    huffman_encoding.encode(contents);
+    let _ = huffman_encoding.encode(contents);
+
+    let _ = huffman_encoding.decode();
 
     Ok(())
 }

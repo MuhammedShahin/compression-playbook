@@ -1,4 +1,5 @@
-use std::io::{self, Read, Write};
+use std::io;
+use std::io::{Read, Write};
 
 
 pub(crate) struct BitWriter<W: Write> {
