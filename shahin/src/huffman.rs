@@ -1,12 +1,14 @@
-use std::{cmp::Ordering, collections::{BinaryHeap, HashMap}, io::Write, usize};
+use std::{cmp::Ordering, collections::BinaryHeap, io::Write, usize};
 use std::fs;
 use std::io;
 
 use crate::bitio;
 
+const EOF: usize = 256;
+
 #[derive(Eq, PartialEq, Clone)]
 pub struct Node {
-    symbole: Option<u8>,
+    symbole: Option<usize>,
     freq: u32,
     left_node: Option<Box<Node>>,
     right_node: Option<Box<Node>>,
@@ -59,18 +61,21 @@ impl Huffman {
 
         let symboles_queue = self.analyz_symboles(&contents);
 
-        let mut huffman_lookup: [PrefixCode; 256] = [PrefixCode {code: 0, length: 0}; 256];
+        let mut huffman_lookup: [PrefixCode; 257] = [PrefixCode {code: 0, length: 0}; 257];
         if let Some(huffman_tree) = self.build_huffman_tree(symboles_queue) {
             self.build_huffman_lookup(&huffman_tree, PrefixCode {code: 0, length: 0}, &mut huffman_lookup);
-            println!("Encoded Tree:");
-            self.print_tree(&huffman_tree, "", true);
+            // println!("Encoded Tree:");
+            // self.print_tree(&huffman_tree, "", true);
         }
 
         let file = fs::File::create("output.txt")?;
         let mut bit_writer = bitio::BitWriter::new(file);
 
-        for i in 0..256 {
-            // println!("character: {:?}, prefix: {:08b}, length: {}", (i as u8) as char, huffman_lookup[i].code, huffman_lookup[i].length);
+        println!("Encoded lookup:");
+        for i in 0..257 {
+            if huffman_lookup[i].length > 0 {
+                println!("character: {:?}, prefix: {:08b}, length: {}", (i as u8), huffman_lookup[i].code, huffman_lookup[i].length);
+            }
             bit_writer.write_bits(huffman_lookup[i].length, 8)?;
             bit_writer.write_bits(huffman_lookup[i].code, huffman_lookup[i].length)?;
         }
@@ -78,6 +83,8 @@ impl Huffman {
         for symbols in contents.into_bytes() {
             bit_writer.write_bits(huffman_lookup[symbols as usize].code, huffman_lookup[symbols as usize].length)?;
         }
+
+        //TODO add end of file.
 
         bit_writer.flush_buffer()?;
 
@@ -96,22 +103,24 @@ impl Huffman {
             right_node: None
         };
 
-        let mut huffman_lookup: [PrefixCode; 256] = [PrefixCode {code: 0, length: 0}; 256];
+        let mut huffman_lookup: [PrefixCode; 257] = [PrefixCode {code: 0, length: 0}; 257];
 
-        for i in 0..256 {
+        println!("Decoded lookup:");
+        for i in 0..257 {
             if let Some(length) = bit_reader.read_bits(8)? {
                 if let Some(code) = bit_reader.read_bits(length)? {
                     huffman_lookup[i] = PrefixCode {code, length};
                     
-                    if length != 0 {
-                        self.insert_leaf(&mut huffman_tree, huffman_lookup[i], i as u8);
+                    if length > 0 {
+                        self.insert_leaf(&mut huffman_tree, huffman_lookup[i], i);
+                        println!("character: {:?}, prefix: {:08b}, length: {}", (i as u8) as char, huffman_lookup[i].code, huffman_lookup[i].length);
                     }
                 }
             }
         }
 
-        println!("Decoded Tree:");
-        self.print_tree(&huffman_tree, "", true);
+        // println!("Decoded Tree:");
+        // self.print_tree(&huffman_tree, "", true);
 
         let mut walking_node = &huffman_tree;
         let mut content: String = String::new();
@@ -119,11 +128,13 @@ impl Huffman {
             if let Some(bit) = bit_reader.read_bit()? {
                 if walking_node.right_node.is_none() && walking_node.left_node.is_none() {
                     if let Some(value) = walking_node.symbole {
-                        content.push(value as char);
-                        walking_node = &huffman_tree;
+                        if value != EOF {
+                            content.push(char::from_u32(value as u32).unwrap());
+                            walking_node = &huffman_tree;
+                        }
                     }
                 }
-                else if bit == 1 {
+                if bit == 1 {
                     if let Some(ref right_node) = walking_node.right_node {
                         walking_node = right_node;
                     }
@@ -147,21 +158,29 @@ impl Huffman {
     }
     
     fn analyz_symboles(&self, contents: &String) -> BinaryHeap<Node> {
-        let mut symboles_freq = HashMap::new();
+        // let mut symboles_freq = HashMap::new();
+        let mut symboles_freq: [u32; 257] = [0; 257];
 
         for character in contents.clone().into_bytes() {
-            let count = symboles_freq.entry(character).or_insert(0);
-            *count += 1;
+            // let count = symboles_freq.entry(character).or_insert(0);
+            // *count += 1;
+            symboles_freq[character as usize] += 1;
         }
 
+        // adding End Of File in huffman.
+        symboles_freq[EOF] = 1;
+
         let mut symboles_queue = BinaryHeap::new();
-        for (key, value) in &symboles_freq {
-            symboles_queue.push(Node {
-                symbole: Some(*key),
-                freq: *value,
-                left_node: None,
-                right_node: None,
-            });
+        for i in 0..257 {
+            if symboles_freq[i] > 0 {
+                println!("character: {:?}, feq: {}", i, symboles_freq[i]);
+                symboles_queue.push(Node {
+                    symbole: Some(i),
+                    freq: symboles_freq[i],
+                    left_node: None,
+                    right_node: None,
+                });
+            }
         }
 
         return symboles_queue;
@@ -185,7 +204,7 @@ impl Huffman {
         return symbols.pop();
     }
 
-    fn build_huffman_lookup(&self, node: &Node, prefix: PrefixCode, hufmman_lookup: &mut [PrefixCode; 256]) {
+    fn build_huffman_lookup(&self, node: &Node, prefix: PrefixCode, hufmman_lookup: &mut [PrefixCode; 257]) {
         if let Some(symbole) = node.symbole {
             hufmman_lookup[symbole as usize] = prefix;
         } else {
@@ -198,7 +217,7 @@ impl Huffman {
         }
     }
 
-    fn insert_leaf(&self, root: &mut Node, prefix: PrefixCode, symbole: u8) {
+    fn insert_leaf(&self, root: &mut Node, prefix: PrefixCode, symbole: usize) {
         let mut currnet_node = root;
 
         for i in (0..prefix.length).rev() {
@@ -243,7 +262,7 @@ impl Huffman {
 
     fn print_tree(&self, node: &Node, prefix: &str, is_left: bool) {
         if let Some(symbol) = node.symbole {
-            println!("{}{}- {:?}", prefix, if is_left { "├──" } else { "└──" }, symbol as char);
+            println!("{}{}- {:?}", prefix, if is_left { "├──" } else { "└──" }, char::from_u32(symbol as u32).unwrap());
         } else {
             println!("{}{}", prefix, if is_left { "├──" } else { "└──" });
 
